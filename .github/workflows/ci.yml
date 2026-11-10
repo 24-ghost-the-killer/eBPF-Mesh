@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang llvm libbpf-dev libelf-dev zlib1g-dev pkg-config \
+            iproute2 iputils-ping jq python3
+
+      - name: Install Rust toolchain (from rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Lint and unit tests
+        run: make test
+
+      - name: Build XDP object and workspace
+        run: make build
+
+      - name: BPF tests (BPF_PROG_TEST_RUN)
+        run: sudo make test-bpf
+
+      - name: Integration tests (veth + netns, native XDP)
+        run: sudo make test-integration
