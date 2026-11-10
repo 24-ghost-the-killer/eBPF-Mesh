@@ -1,0 +1,11 @@
+Sentinel-Edge is dual-licensed per component. Every source file carries an
+SPDX-License-Identifier header; the full texts are in LICENSES/.
+
+  ebpf/, tests/bpf/, tests/common/   GPL-2.0-only OR BSD-2-Clause
+      (the XDP program must be GPL-compatible to use GPL-only BPF helpers,
+       e.g. the SYN-cookie helpers; BSD-2-Clause keeps the ABI header usable
+       from any userspace code)
+
+  everything else                    MIT OR Apache-2.0
+
+Copyright (c) 2026 Sentinel-Edge contributors
