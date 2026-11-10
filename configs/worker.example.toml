@@ -1,0 +1,8 @@
+# eBPF Mesh analysis worker configuration (example).
+# Install as /etc/ebpf-mesh/worker.toml. Used from Phase 5.
+
+# Stable identifier, [A-Za-z0-9_-]{1,64}.
+worker_id = "worker-1"
+
+# NATS server of the lab (private address; replace with your own).
+nats_url = "nats://10.0.0.5:4222"

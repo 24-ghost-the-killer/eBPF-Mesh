@@ -1,0 +1,51 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Unprivileged checks on Linux and macOS: what a developer runs locally.
+  host:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain (from rust-toolchain.toml)
+        run: rustup toolchain install && rustc --version
+      - name: lint
+        run: make lint
+      - name: unprivileged tests
+        run: make test
+
+  # Real kernel: verifier, BPF_PROG_TEST_RUN corpus and the veth integration
+  # test. GitHub's Ubuntu runners give passwordless sudo and a 6.x kernel.
+  kernel:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang llvm libbpf-dev libelf-dev zlib1g-dev pkg-config linux-libc-dev \
+            iproute2 iputils-ping python3
+          uname -r
+      - name: Rust toolchain (from rust-toolchain.toml)
+        run: rustup toolchain install && rustc --version
+      - name: build (as the runner user)
+        run: make all
+      - name: BPF tests (root)
+        run: sudo make test-bpf
+      - name: veth integration test (root)
+        run: sudo make test-integration

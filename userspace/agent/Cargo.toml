@@ -1,0 +1,17 @@
+[package]
+name = "mesh-agent"
+description = "eBPF Mesh agent (Phase 0 stub: loads and validates its config)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+serde.workspace = true
+toml.workspace = true
+em-common.workspace = true
+
+[lints]
+workspace = true
