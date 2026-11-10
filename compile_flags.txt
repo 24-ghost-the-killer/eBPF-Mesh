@@ -1,4 +1,0 @@
--std=gnu11
--Iebpf/src
--Itests/common
--Wno-unknown-pragmas

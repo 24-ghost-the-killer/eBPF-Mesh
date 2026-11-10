@@ -1,5 +1,0 @@
-# Keep in sync with scripts/docker/Dockerfile.dev and .github/workflows/ci.yml.
-[toolchain]
-channel = "1.94.1"
-components = ["rustfmt", "clippy"]
-profile = "minimal"
