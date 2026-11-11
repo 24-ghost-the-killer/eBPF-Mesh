@@ -1040,7 +1040,7 @@
         "tags": [
           "public"
         ],
-        "summary": "Public PoP status (no authentication).",
+        "summary": "Public PoP status (no authentication). Readable cross-origin by the\nconfigured status page origins (no credentials).",
         "operationId": "status",
         "responses": {
           "200": {

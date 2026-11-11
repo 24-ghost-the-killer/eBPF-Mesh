@@ -97,6 +97,10 @@ pub struct ServerCfg {
     /// Take the client IP from X-Forwarded-For (behind a trusted proxy only).
     #[serde(default)]
     pub trust_proxy: bool,
+    /// Origins of the separately hosted status page, allowed to read
+    /// GET /status cross-origin (ADR 0025). Nothing else is CORS-enabled.
+    #[serde(default)]
+    pub status_page_origins: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -347,6 +351,13 @@ impl Config {
         }
         sentinel_common::msg::validate_pop_id(&self.decisions.issuer)
             .map_err(|e| anyhow::anyhow!("decisions.issuer: {e}"))?;
+        for o in &self.server.status_page_origins {
+            let u =
+                url::Url::parse(o).map_err(|e| anyhow::anyhow!("status_page_origins: {o}: {e}"))?;
+            if u.origin().ascii_serialization() != *o {
+                bail!("status_page_origins: {o} must be a bare origin like https://status.example.org");
+            }
+        }
         if let Some(c) = &self.clickhouse {
             if !(c.url.starts_with("https://") || c.url.starts_with("http://")) {
                 bail!("clickhouse.url must be http(s)://");
@@ -402,5 +413,9 @@ mod tests {
         );
         bad("url = \"tls://", "url = \"nats://");
         bad("[server]", "[server]\nextra = 1");
+        bad(
+            "status_page_origins = [\"https://status.example.org\"]",
+            "status_page_origins = [\"https://status.example.org/path\"]",
+        );
     }
 }

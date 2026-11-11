@@ -6,6 +6,7 @@ listen = "127.0.0.1:8080"
 public_url = "https://portal.example.org"   # what users open: mail links, passkey RP, WebSocket origin
 cookie_secure = true          # only false for plain-HTTP labs
 trust_proxy = false           # true behind a reverse proxy that sets X-Forwarded-For
+status_page_origins = ["https://status.example.org"]  # may read GET /status cross-origin
 
 [database]
 url_env = "SENTINEL_DATABASE_URL"              # role sentinel_api

@@ -92,6 +92,7 @@ impl Lab {
             [server]
             listen = "127.0.0.1:0"
             public_url = "https://portal.test"
+            status_page_origins = ["https://status.test"]
             [anycast]
             prefix4 = "198.51.100.0/24"
             tunnel_ep4 = "198.51.100.1"

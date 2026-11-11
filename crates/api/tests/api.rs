@@ -1346,3 +1346,36 @@ async fn drain_and_traffic_history() {
         (StatusCode::SERVICE_UNAVAILABLE, Some("unavailable"))
     );
 }
+
+/// Phase 9: only the configured status page may read /status cross-origin.
+#[tokio::test]
+#[ignore = "needs PostgreSQL: run with `make test-api`"]
+async fn status_is_readable_by_the_status_page_only() {
+    let lab = Lab::new().await;
+    let http = reqwest::Client::new();
+    let get = |origin: &'static str| {
+        http.get(format!("{}/status", lab.base))
+            .header("origin", origin)
+            .send()
+    };
+    let r = get("https://status.test").await.unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    assert_eq!(
+        r.headers()["access-control-allow-origin"],
+        "https://status.test"
+    );
+    assert!(r
+        .headers()
+        .get("access-control-allow-credentials")
+        .is_none());
+    let r = get("https://evil.test").await.unwrap();
+    assert!(r.headers().get("access-control-allow-origin").is_none());
+    // Nothing else is CORS-enabled.
+    let r = http
+        .get(format!("{}/me", lab.base))
+        .header("origin", "https://status.test")
+        .send()
+        .await
+        .unwrap();
+    assert!(r.headers().get("access-control-allow-origin").is_none());
+}

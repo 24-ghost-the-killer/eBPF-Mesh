@@ -32,11 +32,32 @@ const POP_STATUS: &str = "SELECT id, region, \
          WHEN last_seen > now() - interval '15 seconds' THEN 'up' ELSE 'down' END AS status, \
     (extract(epoch FROM last_seen) * 1000)::bigint AS last_seen FROM pops ORDER BY id";
 
-/// Public PoP status (no authentication).
+/// Public PoP status (no authentication). Readable cross-origin by the
+/// configured status page origins (no credentials).
 #[utoipa::path(get, path = "/api/v1/status", tag = "public", responses((status = 200, body = PublicStatus)))]
-pub async fn status(State(state): State<AppState>) -> ApiResult<Json<PublicStatus>> {
+pub async fn status(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+) -> ApiResult<axum::response::Response> {
+    use axum::response::IntoResponse;
     let pops: Vec<PopStatus> = sqlx::query_as(POP_STATUS).fetch_all(&state.pool).await?;
-    Ok(Json(PublicStatus { pops }))
+    let mut resp = Json(PublicStatus { pops }).into_response();
+    let h = resp.headers_mut();
+    h.insert(
+        axum::http::header::VARY,
+        axum::http::HeaderValue::from_static("Origin"),
+    );
+    if let Some(o) = headers
+        .get(axum::http::header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
+    {
+        if state.cfg.server.status_page_origins.iter().any(|a| a == o) {
+            if let Ok(v) = axum::http::HeaderValue::from_str(o) {
+                h.insert(axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, v);
+            }
+        }
+    }
+    Ok(resp)
 }
 
 #[derive(Serialize, ToSchema, FromRow)]
