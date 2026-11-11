@@ -265,6 +265,16 @@ sentinel-worker run --config /etc/sentinel/worker.toml
   `SENTINEL_DECISION_KEY`).
 - Agents count outcomes in `sentinel_decisions_total{result=...}`.
 
+## Public website and status page
+
+- Website settings at build time: copy `web/.env.example` to
+  `web/.env.local` (`NEXT_PUBLIC_CONTACT_EMAIL`, `NEXT_PUBLIC_STATUS_URL`).
+- Status page: copy `status-page/` to a static host on its own domain, add
+  `config.js` (from `config.example.js`: the API's status URL and the
+  portal URL), edit `incidents.json` during incidents, and list the page's
+  origin in the API's `[server] status_page_origins`. Serve it with the same
+  CSP as the meta tag plus `frame-ancestors 'none'`.
+
 ## Running the portal (web app)
 
 The portal is a Next.js app in `web/` that only talks to the API, under the

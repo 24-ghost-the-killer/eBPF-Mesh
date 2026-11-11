@@ -20,8 +20,8 @@ ASNs. Nothing here is meant to touch the real internet yet.
 | 5 | Control-plane API and PostgreSQL: auth, 2FA, roles, RLS, assets, policy, rules, audit | done |
 | 6 | Portal v1: login, 2FA with passkeys, live overview, protected IPs with tunnel script/test, rules | done |
 | 7 | Analysis workers: detection, signed decisions, attacks pages, webhooks | done |
-| 8 | Anycast lab: containerlab + BIRD, health check, drain, ClickHouse history, admin panel | **done** |
-| 9 | Public website | next |
+| 8 | Anycast lab: containerlab + BIRD, health check, drain, ClickHouse history, admin panel | done |
+| 9 | Public website: home, how it works, pricing, status (hosted separately), contact | **done** |
 
 ## What exists today
 
@@ -82,6 +82,10 @@ ASNs. Nothing here is meant to touch the real internet yet.
   the admin panel (AS-path prepending); workers store flows in ClickHouse
   for per-PoP traffic history ([ADR 0023](docs/adr/0023-anycast-lab-drain-health.md),
   [ADR 0024](docs/adr/0024-traffic-history-clickhouse.md)).
+- **Public website** (`web/app/(site)`): home with a live PoP map, how it
+  works, pricing, status, contact; and a **status page** (`status-page/`,
+  static files on its own host) that keeps working when the platform is down
+  ([ADR 0025](docs/adr/0025-public-site-and-status-page.md)).
 - **Portal** (`web/`, Next.js + Tailwind + shadcn/ui-style components +
   Recharts): signup, email verification, login, password reset, 2FA with
   passkeys or an authenticator app; an overview with a live graph over
@@ -115,6 +119,10 @@ ASNs. Nothing here is meant to touch the real internet yet.
   PostgreSQL, Vitest, Playwright browser tests against the full lab, CI.
 
 Acceptance tests:
+- phase 9 (`tests/e2e/site.spec.ts`): every public page renders, passes axe
+  in light and dark mode, fits a phone and links to signup; the separate
+  status page shows the PoPs and incidents and, with the API unreachable,
+  says so and keeps the last known state.
 - phase 8 (`make lab-test`, `lab/scripts/acceptance.sh`): in the
   containerlab lab, each region's bot reaches its own PoP (ClickHouse
   flows); draining pop-2 from the admin API, killing pop-3's agent and
@@ -206,7 +214,8 @@ crates/bpf                Linux access to the XDP program (attach, maps, rules, 
 crates/ctl                sentinelctl (operator CLI)
 crates/agent              sentinel-agent (PoP agent)
 crates/api                sentinel-api (control-plane API) + its integration tests
-web/                      Next.js portal (app/, components/, lib/api generated client)
+web/                      Next.js public site + portal + admin (app/, components/, lib/api)
+status-page/              static status page (hosted separately)
 crates/gen                sentinel-gen (lab traffic generator)
 crates/worker             sentinel-worker (attack detection, signed decisions)
 migrations/postgres       schema + Row Level Security
