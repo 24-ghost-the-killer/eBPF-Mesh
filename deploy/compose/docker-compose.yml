@@ -1,0 +1,136 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Sentinel-Edge control plane (spec section 2: API, web, databases, NATS,
+# monitoring). PoPs run on their own servers (deploy/ansible).
+#
+#   scripts/init.sh                      # once: secrets and configs in state/
+#   docker compose --env-file state/.env up -d --build
+name: sentinel
+
+x-control: &control
+  build: { context: ../.., dockerfile: deploy/docker/Dockerfile.control }
+  image: sentinel-control:local
+  restart: unless-stopped
+  networks: [internal]
+
+services:
+  caddy:
+    image: caddy:2.11.6
+    restart: unless-stopped
+    ports: ["${HTTPS_PORT:-443}:${HTTPS_PORT:-443}", "${HTTP_PORT:-80}:80"]
+    environment: { PORTAL_DOMAIN: "${PORTAL_DOMAIN}", TLS_ISSUER: "${TLS_ISSUER}", HTTPS_PORT: "${HTTPS_PORT:-443}" }
+    volumes: ["./Caddyfile:/etc/caddy/Caddyfile:ro", "caddy-data:/data"]
+    depends_on: [api, portal]
+    networks: [internal, public]
+
+  portal:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.portal
+      args: { NEXT_PUBLIC_CONTACT_EMAIL: "${CONTACT_EMAIL:-}", NEXT_PUBLIC_STATUS_URL: "${STATUS_PAGE_ORIGIN:-}" }
+    image: sentinel-portal:local
+    restart: unless-stopped
+    networks: [internal]
+
+  api:
+    <<: *control
+    command: ["sentinel-api", "serve", "--config", "/config/api.toml"]
+    env_file: [state/api.env]
+    volumes: ["./state/config:/config:ro", "./state/nats/ca.pem:/nats/ca.pem:ro", "./state/nats/api.nk:/nats/api.nk:ro"]
+    depends_on:
+      bootstrap: { condition: service_completed_successfully }
+      nats: { condition: service_started }
+
+  # Migrations, the workers' signing keys and the NATS KV buckets, then exits.
+  bootstrap:
+    <<: *control
+    restart: "no"
+    entrypoint: ["sh", "/config/bootstrap.sh"]
+    env_file: [state/api.env]
+    volumes: ["./state/config:/config:ro", "./state/workers:/workers:ro"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      clickhouse: { condition: service_started }
+
+  nats-init:
+    image: natsio/nats-box:0.20.1
+    restart: "no"
+    command: ["sh", "/config/nats-init.sh"]
+    volumes: ["./state/config:/config:ro", "./state/nats/ca.pem:/nats/ca.pem:ro", "./state/nats/admin.nk:/nats/admin.nk:ro"]
+    depends_on: [nats]
+    networks: [internal]
+
+  worker-1:
+    <<: *control
+    command: ["sentinel-worker", "run", "--config", "/config/worker-1.toml"]
+    env_file: [state/worker.env]
+    volumes:
+      - ./state/config:/config:ro
+      - ./state/workers/worker-1.key:/secrets/worker.key:ro
+      - ./state/nats/ca.pem:/nats/ca.pem:ro
+      - ./state/nats/worker-1.nk:/secrets/nats.nk:ro
+    depends_on: [nats, clickhouse]
+  worker-2:
+    <<: *control
+    command: ["sentinel-worker", "run", "--config", "/config/worker-2.toml"]
+    env_file: [state/worker.env]
+    volumes:
+      - ./state/config:/config:ro
+      - ./state/workers/worker-2.key:/secrets/worker.key:ro
+      - ./state/nats/ca.pem:/nats/ca.pem:ro
+      - ./state/nats/worker-2.nk:/secrets/nats.nk:ro
+    depends_on: [nats, clickhouse]
+
+  nats:
+    image: nats:2.15.1
+    restart: unless-stopped
+    command: ["-c", "/nats/server.json"]
+    ports: ["${NATS_PORT:-4222}:4222"]   # PoP agents (restrict to the management network)
+    volumes:
+      - ./state/nats/server.json:/nats/server.json:ro
+      - ./state/nats/server.pem:/nats/server.pem:ro
+      - ./state/nats/server.key:/nats/server.key:ro
+      - nats-data:/data
+    networks: [internal, public]
+
+  postgres:
+    image: postgres:17.10
+    restart: unless-stopped
+    env_file: [state/postgres.env]
+    volumes: ["pg-data:/var/lib/postgresql/data", "./postgres/10-roles.sh:/docker-entrypoint-initdb.d/10-roles.sh:ro"]
+    healthcheck: { test: ["CMD", "pg_isready", "-U", "sentinel_owner", "-d", "sentinel"], interval: 2s, retries: 30 }
+    networks: [internal]
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.8.33.6
+    restart: unless-stopped
+    env_file: [state/clickhouse.env]
+    volumes:
+      - ch-data:/var/lib/clickhouse
+      - ../../migrations/clickhouse/0001_flows.sql:/docker-entrypoint-initdb.d/10-flows.sql:ro
+      - ./clickhouse/20-users.sh:/docker-entrypoint-initdb.d/20-users.sh:ro
+    ulimits: { nofile: { soft: 262144, hard: 262144 } }
+    networks: [internal]
+
+  prometheus:
+    image: prom/prometheus:v3.15.1
+    restart: unless-stopped
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=30d"]
+    volumes: ["./prometheus:/etc/prometheus:ro", "prom-data:/prometheus"]
+    networks: [internal]
+
+  grafana:
+    image: grafana/grafana:13.0.12
+    restart: unless-stopped
+    env_file: [state/grafana.env]
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports: ["127.0.0.1:3001:3000"]      # reach it through an SSH tunnel or VPN
+    networks: [internal]
+
+volumes: { caddy-data: {}, nats-data: {}, pg-data: {}, ch-data: {}, prom-data: {}, grafana-data: {} }
+
+networks:
+  internal: {}
+  public: {}

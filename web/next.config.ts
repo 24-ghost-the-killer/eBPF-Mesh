@@ -1,10 +1,15 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+import path from "node:path";
 import type { NextConfig } from "next";
 
 // Security headers that do not depend on the request. The CSP (with a
 // per-request nonce) and HSTS are set in proxy.ts.
 const config: NextConfig = {
   poweredByHeader: false,
+  // Container images (deploy/docker/Dockerfile.portal) use the standalone server.
+  ...(process.env.NEXT_OUTPUT === "standalone"
+    ? { output: "standalone" as const, outputFileTracingRoot: path.join(process.cwd(), "..") }
+    : {}),
   reactStrictMode: true,
   async headers() {
     return [

@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# The Next.js portal + public site (standalone output). Build context: the
+# repository root. NEXT_PUBLIC_* values are baked in at build time.
+FROM node:24.22.1-trixie-slim AS build
+RUN npm install -g --no-fund --no-audit pnpm@12.4.1
+WORKDIR /src
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY web/package.json web/
+COPY tests/e2e/package.json tests/e2e/
+RUN pnpm install --frozen-lockfile --filter web...
+COPY web web
+COPY docs/openapi.json docs/
+ARG NEXT_PUBLIC_CONTACT_EMAIL=""
+ARG NEXT_PUBLIC_STATUS_URL=""
+ENV NEXT_OUTPUT=standalone NEXT_TELEMETRY_DISABLED=1 \
+    NEXT_PUBLIC_CONTACT_EMAIL=$NEXT_PUBLIC_CONTACT_EMAIL NEXT_PUBLIC_STATUS_URL=$NEXT_PUBLIC_STATUS_URL
+RUN pnpm --filter web build
+
+FROM node:24.22.1-trixie-slim
+ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 HOSTNAME=0.0.0.0 PORT=3000
+WORKDIR /app
+COPY --from=build --chown=node /src/web/.next/standalone ./
+COPY --from=build --chown=node /src/web/.next/static ./web/.next/static
+USER node
+EXPOSE 3000
+CMD ["node", "web/server.js"]

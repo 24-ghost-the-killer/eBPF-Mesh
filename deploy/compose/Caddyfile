@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# One origin for the portal and the API (ADR 0018), TLS (ACME or a test CA).
+{
+	admin 0.0.0.0:2019
+	metrics
+	servers {
+		trusted_proxies static private_ranges
+	}
+}
+
+{$PORTAL_DOMAIN}:{$HTTPS_PORT:443} {
+	tls {$TLS_ISSUER}
+	encode zstd gzip
+	# Clients cannot inject X-Forwarded-For: Caddy sets it to the peer address.
+	handle /api/v1/* {
+		reverse_proxy api:8080
+	}
+	handle {
+		reverse_proxy portal:3000
+	}
+	log {
+		output stdout
+		format json
+	}
+}
