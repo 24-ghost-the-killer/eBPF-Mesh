@@ -151,7 +151,7 @@ static __always_inline int xs_build_synack(struct xdp_md *ctx,
 	__builtin_memcpy(eth->h_source, mac, ETH_ALEN);
 
 	if (pkt->l3_proto == ETH_P_IP) {
-		struct iphdr *ip = data + (pkt->l3_off & 0x3f);
+		struct iphdr *ip = data + XS_BOUND(pkt->l3_off, 0x1f);
 		struct tcphdr *th = (void *)(ip + 1);
 		__u64 sum;
 
@@ -177,7 +177,7 @@ static __always_inline int xs_build_synack(struct xdp_md *ctx,
 	}
 
 	{
-		struct ipv6hdr *ip6 = data + (pkt->l3_off & 0x3f);
+		struct ipv6hdr *ip6 = data + XS_BOUND(pkt->l3_off, 0x1f);
 		struct tcphdr *th = (void *)(ip6 + 1);
 		__u64 sum;
 
@@ -233,10 +233,9 @@ static __always_inline __u32 xs_syncookie(struct xdp_md *ctx,
 		return XS_V_PASS;
 	}
 
-	/* Explicit bound so the verifier can track the variable offset. */
 	if (pkt->l4_off > XS_MAX_L4_OFF)
 		return XS_V_DROP_UNVERIFIED;
-	th = data + pkt->l4_off;
+	th = data + XS_BOUND(pkt->l4_off, 0x3fff);
 	if ((void *)(th + 1) > data_end)
 		return XS_V_DROP_UNVERIFIED;
 	slot = xs_cookie_slot(now);

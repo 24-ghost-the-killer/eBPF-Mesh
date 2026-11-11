@@ -15,13 +15,21 @@ struct {
 	__type(value, struct xs_cfg);
 } xs_cfg SEC(".maps");
 
-/* Phase 2: the single default policy. Replaced by per-asset values in phase 3. */
 struct {
-	__uint(type, BPF_MAP_TYPE_ARRAY);
-	__uint(max_entries, 1);
-	__type(key, __u32);
-	__type(value, struct xs_policy);
-} xs_policy SEC(".maps");
+	__uint(type, BPF_MAP_TYPE_LPM_TRIE);
+	__uint(max_entries, XS_TENANTS_MAX_ENTRIES);
+	__uint(map_flags, BPF_F_NO_PREALLOC);
+	__type(key, struct xs_tenant_key);
+	__type(value, struct xs_asset);
+} xs_tenants SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_LPM_TRIE);
+	__uint(max_entries, XS_TENANTS_MAX_ENTRIES);
+	__uint(map_flags, BPF_F_NO_PREALLOC);
+	__type(key, struct xs_tenant6_key);
+	__type(value, struct xs_asset);
+} xs_tenants6 SEC(".maps");
 
 struct {
 	__uint(type, BPF_MAP_TYPE_LPM_TRIE);

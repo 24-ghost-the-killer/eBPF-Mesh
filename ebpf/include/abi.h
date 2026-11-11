@@ -17,7 +17,7 @@
 
 #include <linux/types.h>
 
-#define XS_ABI_VERSION 2
+#define XS_ABI_VERSION 3
 
 /* Parser limits (compile-time bounds for the verifier). */
 #define XS_MAX_VLAN_TAGS 2
@@ -29,12 +29,17 @@
 #define XS_SERVICES_MAX_ENTRIES 4096
 #define XS_RL_MAX_ENTRIES 262144
 #define XS_VERIFIED_MAX_ENTRIES 262144
+#define XS_TENANTS_MAX_ENTRIES 65536
 
 /* Tenant 0 means "global" / "no tenant". */
 #define XS_TENANT_GLOBAL 0
 
 /* Rate limiting groups IPv6 sources by this prefix length. */
 #define XS_RL_V6_PREFIX 64
+
+/* Outer IPv4 header added by the tunnel, and the MTU assumed if unset. */
+#define XS_TUNNEL_OVERHEAD 20
+#define XS_DEFAULT_MTU 1500
 
 /* Default lifetime of a verified (SYN-cookie authenticated) source. */
 #define XS_VERIFY_TTL_DEFAULT_S 300
@@ -68,7 +73,12 @@ enum xs_verdict {
 	XS_V_TX_SYN_CHALLENGE = 11, /* SYN answered with a cookie SYN-ACK */
 	XS_V_SYN_VERIFIED = 12,     /* RST carried a valid cookie: source verified */
 	XS_V_DROP_UNVERIFIED = 13,  /* TCP from a source that is not verified */
-	XS_V__COUNT = 14,           /* number of verdicts; not a verdict */
+	XS_V_DROP_NO_TENANT = 14,   /* destination is not a protected prefix */
+	XS_V_DROP_TOO_BIG = 15,     /* does not fit the uplink MTU once tunnelled */
+	XS_V_DROP_TUNNEL = 16,      /* cannot tunnel: PoP IP / origin missing */
+	XS_V_TX_RETURN = 17,        /* origin's reply decapsulated and forwarded */
+	XS_V_DROP_RETURN = 18,      /* invalid return traffic (unknown origin, spoofing) */
+	XS_V__COUNT = 19,           /* number of verdicts; not a verdict */
 };
 
 /* Why a rule exists (xs_rule.reason). Append-only. */
@@ -84,18 +94,39 @@ struct xs_cfg {
 	__u8 pop_ip6[16];     /* PoP unicast IPv6; all-zero = unset */
 	__u64 cookie_key[2];  /* SipHash key for SYN cookies; zero = disabled */
 	__u32 verify_ttl_s;   /* lifetime of a verified source; 0 = default */
-	__u32 _pad;
+	__be32 tunnel_ep4;    /* anycast endpoint for origin replies; 0 = none */
+	__u8 nexthop_mac[6];  /* uplink router; all-zero = back to the sender */
+	__u16 uplink_mtu;     /* 0 = XS_DEFAULT_MTU */
 };
 
-/*
- * xs_policy: ARRAY, one entry at key 0. Phase 2 only: one default policy for
- * all traffic. Phase 3 embeds this struct in the per-asset LPM value.
- */
+/* Per-asset policy, embedded in struct xs_asset. */
 struct xs_policy {
 	__u32 flags;       /* XS_P_* */
 	__u32 pps_per_src; /* token bucket rate; 0 = no rate limit */
 	__u32 burst;       /* bucket size in packets; 0 = pps_per_src */
 	__u32 _pad;
+};
+
+/*
+ * xs_tenants / xs_tenants6: LPM, protected prefix -> asset (ADR 0004: one
+ * entry per protected prefix, carrying the owning tenant and its policy).
+ */
+struct xs_tenant_key {
+	__u32 prefixlen;
+	__be32 addr;
+};
+
+struct xs_tenant6_key {
+	__u32 prefixlen;
+	__u8 addr[16];
+};
+
+struct xs_asset {
+	__u32 tenant;
+	__u32 asset;            /* asset id; key of xs_services */
+	__be32 origin4;         /* tunnel destination (customer server) */
+	__u32 _pad;
+	struct xs_policy policy;
 };
 
 /* xs_allow / xs_block (LPM). prefixlen = 32 (tenant) + source prefix length. */
@@ -153,10 +184,16 @@ struct xs_stats_val {
 	__u64 bytes;
 };
 
-_Static_assert(sizeof(struct xs_cfg) == 48, "xs_cfg size");
+_Static_assert(sizeof(struct xs_cfg) == 56, "xs_cfg size");
 _Static_assert(_Alignof(struct xs_cfg) == 8, "xs_cfg align");
 _Static_assert(sizeof(struct xs_policy) == 16, "xs_policy size");
 _Static_assert(_Alignof(struct xs_policy) == 4, "xs_policy align");
+_Static_assert(sizeof(struct xs_tenant_key) == 8, "xs_tenant_key size");
+_Static_assert(_Alignof(struct xs_tenant_key) == 4, "xs_tenant_key align");
+_Static_assert(sizeof(struct xs_tenant6_key) == 20, "xs_tenant6_key size");
+_Static_assert(_Alignof(struct xs_tenant6_key) == 4, "xs_tenant6_key align");
+_Static_assert(sizeof(struct xs_asset) == 32, "xs_asset size");
+_Static_assert(_Alignof(struct xs_asset) == 4, "xs_asset align");
 _Static_assert(sizeof(struct xs_src_key) == 12, "xs_src_key size");
 _Static_assert(_Alignof(struct xs_src_key) == 4, "xs_src_key align");
 _Static_assert(sizeof(struct xs_src6_key) == 24, "xs_src6_key size");

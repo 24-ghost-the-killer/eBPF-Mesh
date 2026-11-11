@@ -29,6 +29,18 @@
 
 #include "abi.h"
 
+/*
+ * Bounds a value for the verifier with a mask clang cannot optimise away.
+ * Used on offsets read back from struct xs_pkt inside global functions,
+ * which the verifier checks without knowing the caller's values.
+ */
+#define XS_BOUND(v, mask)                                                      \
+	({                                                                     \
+		__u64 __b = (v);                                               \
+		asm volatile("%[b] &= " #mask : [b] "+r"(__b));                \
+		__b;                                                           \
+	})
+
 #ifndef ETH_P_8021AD
 #define ETH_P_8021AD 0x88A8
 #endif
@@ -70,6 +82,7 @@ struct xs_pkt {
 	__be16 dport;
 	__u16 l3_off;     /* offset of the IP header from the frame start */
 	__u16 l4_off;     /* offset of the L4 header (valid when XS_P_OK) */
+	__u16 ip_len;     /* IP packet length per its header (excl. padding) */
 	__be32 src4;
 	__be32 dst4;
 	struct in6_addr src6;
@@ -173,6 +186,7 @@ static __always_inline int xs_parse_ipv4(void *data, void *data_end,
 	if ((void *)iph + ihl > data_end)
 		return XS_P_MALFORMED;
 
+	pkt->ip_len = tot;
 	pkt->l4_proto = iph->protocol;
 	pkt->src4 = iph->saddr;
 	pkt->dst4 = iph->daddr;
@@ -205,6 +219,7 @@ static __always_inline int xs_parse_ipv6(void *data, void *data_end,
 	if (sizeof(*ip6) + remaining > pkt_len - pkt->l3_off)
 		return XS_P_MALFORMED;
 
+	pkt->ip_len = sizeof(*ip6) + remaining;
 	__builtin_memcpy(&pkt->src6, &ip6->saddr, sizeof(pkt->src6));
 	__builtin_memcpy(&pkt->dst6, &ip6->daddr, sizeof(pkt->dst6));
 

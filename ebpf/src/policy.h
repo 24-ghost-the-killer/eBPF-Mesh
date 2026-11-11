@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause */
 /*
  * Filtering steps 2-8 of the pipeline (spec section 5.1):
- *   local traffic, bogon sources, allowlist, blocklist, allowed services,
- *   fragments, per-source token bucket, SYN-cookie source verification.
+ *   local traffic, bogon sources, asset lookup, allowlist, blocklist, allowed
+ *   services, fragments, per-source token bucket, SYN-cookie verification.
  */
 #ifndef XS_POLICY_H
 #define XS_POLICY_H
@@ -95,6 +95,22 @@ static __always_inline int xs_is_bogon(const struct xs_pkt *pkt)
 	if (pkt->l3_proto == ETH_P_IP)
 		return xs_bogon4(pkt->src4);
 	return xs_bogon6(pkt->src6.in6_u.u6_addr8);
+}
+
+/* ---- step 4: tenant (asset) lookup ---------------------------------------- */
+
+static __always_inline const struct xs_asset *xs_lookup_asset(const struct xs_pkt *pkt)
+{
+	if (pkt->l3_proto == ETH_P_IP) {
+		struct xs_tenant_key k = { .prefixlen = 32, .addr = pkt->dst4 };
+
+		return bpf_map_lookup_elem(&xs_tenants, &k);
+	} else {
+		struct xs_tenant6_key k = { .prefixlen = 128 };
+
+		__builtin_memcpy(k.addr, &pkt->dst6, 16);
+		return bpf_map_lookup_elem(&xs_tenants6, &k);
+	}
 }
 
 /* ---- steps 5-6: allow and block lists ----------------------------------- */
@@ -255,6 +271,33 @@ static __always_inline __u32 xs_policy_verdict(struct xdp_md *ctx,
 	    pkt->frag == XS_FRAG_NONE)
 		return xs_syncookie(ctx, pkt, cfg, tenant, now, pkt_len, mitigate, tx);
 	return XS_V_PASS;
+}
+
+/* xs_policy_eval() return value: verdict, plus this bit when the frame was
+ * rewritten into a SYN challenge (send with XDP_TX). */
+#define XS_EVAL_TX (1 << 16)
+#define XS_EVAL_LATER_FRAG (1 << 0)
+#define XS_EVAL_MITIGATE (1 << 1)
+
+/*
+ * Steps 5-8 for asset a. A global (non-inlined) function: the verifier checks
+ * it once with unknown inputs instead of once per parser path of the caller.
+ */
+__attribute__((noinline)) int xs_policy_eval(struct xdp_md *ctx,
+					     struct xs_pkt *pkt,
+					     struct xs_asset *a, __u32 pkt_len,
+					     __u32 eval_flags)
+{
+	__u32 zero = 0, verdict;
+	const struct xs_cfg *cfg = bpf_map_lookup_elem(&xs_cfg, &zero);
+	int tx = 0;
+
+	if (!ctx || !pkt || !a)
+		return XS_V_PASS;
+	verdict = xs_policy_verdict(ctx, pkt, cfg, &a->policy, a->tenant, a->asset,
+				    eval_flags & XS_EVAL_LATER_FRAG, pkt_len,
+				    !!(eval_flags & XS_EVAL_MITIGATE), &tx);
+	return (int)(verdict | (tx ? XS_EVAL_TX : 0));
 }
 
 static __always_inline int xs_verdict_drops(__u32 v)

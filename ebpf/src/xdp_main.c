@@ -4,19 +4,23 @@
  *
  * Pipeline (cheapest checks first):
  *   1. parse; malformed -> drop                         [global]
- *      non-IP (ARP, LLDP, ...) -> pass
+ *      non-IP (ARP, LLDP, ...) -> pass to the kernel
+ *   r. to the anycast tunnel endpoint: origin reply ->
+ *      validate, clamp MSS, decapsulate, forward        (tunnel.h)
  *   2. to the PoP itself (unicast IP, IPv6 ND) -> pass  [global]
  *   3. bogon source -> drop                              [global]
- *   4. tenant lookup                                     (phase 3; until then
- *                                                         one default policy)
- *   5. allowlist -> pass, skipping 6-8                   [policy]
+ *   4. asset lookup on destination; none -> drop         [global]
+ *   5. allowlist -> deliver, skipping 6-8                [policy]
  *   6. blocklist (unexpired) -> drop                     [policy]
  *   7. allowed services / fragments -> drop the rest     [policy]
  *   8. per-source token bucket; SYN-cookie verification  [policy]
+ *  10. deliver: encapsulate to the asset's origin, XDP_TX
  *
  * [global] drops obey only the XS_CFG_F_OBSERVE kill switch. [policy] drops
- * and challenges happen only when the policy has XS_P_MITIGATE (and the kill
- * switch is off); otherwise the verdict is counted and the packet passed.
+ * and challenges happen only when the asset's policy has XS_P_MITIGATE (and
+ * the kill switch is off). In observe mode the verdict is counted and the
+ * packet is still delivered through the tunnel. (Step 9, sampling, arrives
+ * with the agent in phase 4.)
  */
 #include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
@@ -25,6 +29,7 @@
 #include "maps.h"
 #include "parse.h"
 #include "policy.h"
+#include "tunnel.h"
 
 static __always_inline void xs_count(__u32 tenant, __u32 verdict, __u64 bytes)
 {
@@ -52,11 +57,13 @@ int xs_xdp(struct xdp_md *ctx)
 	void *data = (void *)(long)ctx->data;
 	void *data_end = (void *)(long)ctx->data_end;
 	__u32 pkt_len = data_end - data;
-	__u32 zero = 0, verdict, tenant = XS_TENANT_GLOBAL;
+	__u32 zero = 0, verdict, fail, tenant = XS_TENANT_GLOBAL;
 	const struct xs_cfg *cfg = bpf_map_lookup_elem(&xs_cfg, &zero);
 	int global_observe = cfg && (cfg->flags & XS_CFG_F_OBSERVE);
+	const struct xs_asset *a;
+	struct xs_asset asset;
 	struct xs_pkt pkt = {};
-	int rc, action, tx = 0;
+	int rc, action, eval;
 
 	rc = xs_parse(data, data_end, pkt_len, &pkt);
 	if (rc == XS_P_MALFORMED) {
@@ -69,36 +76,68 @@ int xs_xdp(struct xdp_md *ctx)
 		action = XDP_PASS;
 		goto out;
 	}
+	if (xs_is_return(&pkt, cfg)) {
+		verdict = xs_return(ctx, &pkt, &tenant);
+		if (verdict == XS_V_TX_RETURN)
+			action = XDP_TX;
+		else
+			action = global_observe ? XDP_PASS : XDP_DROP;
+		goto out;
+	}
 	if (xs_is_local(&pkt, cfg)) {
 		verdict = XS_V_PASS_LOCAL;
 		action = XDP_PASS;
 		goto out;
 	}
+
+	a = xs_lookup_asset(&pkt);
+	if (a) {
+		asset = *a; /* stack copy for the global functions */
+		tenant = asset.tenant;
+	}
+
 	if (xs_is_bogon(&pkt)) {
 		verdict = XS_V_DROP_BOGON;
+		if (!global_observe) {
+			action = XDP_DROP;
+			goto out;
+		}
+		if (!a) {
+			action = XDP_PASS;
+			goto out;
+		}
+		goto deliver; /* kill switch: count, but keep delivering */
+	}
+	if (!a) {
+		verdict = XS_V_DROP_NO_TENANT;
 		action = global_observe ? XDP_PASS : XDP_DROP;
 		goto out;
 	}
 
-	{
-		/* Phase 2: one default policy, tenant 0, asset 0. */
-		const struct xs_policy *pol = bpf_map_lookup_elem(&xs_policy, &zero);
-		int mitigate;
+	eval = 0;
+	if (rc == XS_P_FRAGMENT)
+		eval |= XS_EVAL_LATER_FRAG;
+	if ((asset.policy.flags & XS_P_MITIGATE) && !global_observe)
+		eval |= XS_EVAL_MITIGATE;
+	eval = xs_policy_eval(ctx, &pkt, &asset, pkt_len, eval);
+	verdict = eval & 0xffff;
+	if (eval & XS_EVAL_TX) {
+		action = XDP_TX; /* SYN challenge back to the client */
+		goto out;
+	}
+	if ((asset.policy.flags & XS_P_MITIGATE) && !global_observe &&
+	    xs_verdict_drops(verdict)) {
+		action = XDP_DROP;
+		goto out;
+	}
 
-		if (!pol) {
-			verdict = XS_V_PASS;
-			action = XDP_PASS;
-			goto out;
-		}
-		mitigate = (pol->flags & XS_P_MITIGATE) && !global_observe;
-		verdict = xs_policy_verdict(ctx, &pkt, cfg, pol, tenant, 0,
-					    rc == XS_P_FRAGMENT, pkt_len,
-					    mitigate, &tx);
-		if (tx)
-			action = XDP_TX;
-		else
-			action = mitigate && xs_verdict_drops(verdict) ? XDP_DROP :
-									 XDP_PASS;
+deliver:
+	fail = xs_deliver(ctx, &pkt, &asset);
+	if (fail) {
+		verdict = fail;
+		action = XDP_DROP;
+	} else {
+		action = XDP_TX;
 	}
 out:
 	/* Bytes counted as received, before any rewrite. */
