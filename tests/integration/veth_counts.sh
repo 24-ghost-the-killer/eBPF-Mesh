@@ -135,7 +135,7 @@ check() { # check <verdict> <want>
 	[ "$got" -eq "$2" ] && pass "counter $1 = $2" || fail "counter $1 = $got, want $2"
 }
 check pass "$want_pass"
-check fragment $((N_FRAG4 + N_FRAG6))
+check drop_fragment $((N_FRAG4 + N_FRAG6)) # observe mode: counted, passed
 check pass_non_ip "$N_NONIP"
 check drop_malformed "$N_MALFORMED"
 total_bytes=$(jq '[.entries[].bytes] | add' <<<"$stats")

@@ -15,6 +15,8 @@ TARGET_DIR ?= $(or $(CARGO_TARGET_DIR),target)
 BUILD      := build
 BPF_OBJ    := $(BUILD)/ebpf/xdp_main.o
 CTL        := $(TARGET_DIR)/debug/sentinelctl
+GEN        := $(TARGET_DIR)/debug/sentinel-gen
+PASS_OBJ   := $(BUILD)/tests/xdp_pass.o
 TEST_XDP   := $(BUILD)/tests/test_xdp
 UNAME_S    := $(shell uname -s)
 
@@ -49,17 +51,27 @@ lint:
 test: lint
 	$(CARGO) test --workspace
 
-$(TEST_XDP): tests/bpf/test_xdp.c tests/bpf/cases.h tests/common/pktbuild.h ebpf/include/abi.h
+$(TEST_XDP): tests/bpf/test_xdp.c tests/bpf/policy_tests.c tests/bpf/harness.h tests/bpf/cases.h tests/common/pktbuild.h ebpf/include/abi.h ebpf/src/cookie.h
 	@mkdir -p $(@D)
-	$(CC) -O2 -g -std=gnu11 -Wall -Wextra -Werror $< -o $@ $$(pkg-config --cflags --libs libbpf)
+	$(CC) -O2 -g -std=gnu11 -Wall -Wextra -Werror $(filter %.c,$^) -o $@ $$(pkg-config --cflags --libs libbpf)
 
 test-bpf: bpf $(TEST_XDP)
 	./$(TEST_XDP) $(BPF_OBJ)
 
-# Does not build the CLI itself: under sudo, cargo is usually not on PATH.
-test-integration: bpf
-	@test -x "$(CTL)" || { echo "missing $(CTL): run 'make rust' first (as your normal user)"; exit 1; }
-	CTL="$(abspath $(CTL))" BPF_OBJ="$(abspath $(BPF_OBJ))" tests/integration/veth_counts.sh
+$(PASS_OBJ): tests/integration/xdp_pass.c
+	@mkdir -p $(@D)
+	clang -target bpf -O2 -g -Wall -Werror -I/usr/include/$$(uname -m)-linux-gnu -c $< -o $@
+
+INTEGRATION_TESTS := veth_counts policy_live synflood
+
+# Does not build the Rust binaries: under sudo, cargo is usually not on PATH.
+test-integration: bpf $(PASS_OBJ)
+	@for b in "$(CTL)" "$(GEN)"; do test -x "$$b" || { echo "missing $$b: run 'make rust' first (as your normal user)"; exit 1; }; done
+	@set -e; for t in $(INTEGRATION_TESTS); do \
+		echo "# integration: $$t"; \
+		CTL="$(abspath $(CTL))" GEN="$(abspath $(GEN))" BPF_OBJ="$(abspath $(BPF_OBJ))" \
+		PASS_OBJ="$(abspath $(PASS_OBJ))" tests/integration/$$t.sh; \
+	done
 
 # Everything, in order. Must run as root on Linux (used by docker-test).
 test-all: build test test-bpf test-integration
