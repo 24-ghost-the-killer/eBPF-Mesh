@@ -51,7 +51,7 @@ lint:
 test: lint
 	$(CARGO) test --workspace
 
-$(TEST_XDP): tests/bpf/test_xdp.c tests/bpf/policy_tests.c tests/bpf/harness.h tests/bpf/cases.h tests/common/pktbuild.h ebpf/include/abi.h ebpf/src/cookie.h
+$(TEST_XDP): tests/bpf/test_xdp.c tests/bpf/policy_tests.c tests/bpf/tunnel_tests.c tests/bpf/harness.h tests/bpf/cases.h tests/common/pktbuild.h ebpf/include/abi.h ebpf/src/cookie.h
 	@mkdir -p $(@D)
 	$(CC) -O2 -g -std=gnu11 -Wall -Wextra -Werror $(filter %.c,$^) -o $@ $$(pkg-config --cflags --libs libbpf)
 
@@ -62,7 +62,7 @@ $(PASS_OBJ): tests/integration/xdp_pass.c
 	@mkdir -p $(@D)
 	clang -target bpf -O2 -g -Wall -Werror -I/usr/include/$$(uname -m)-linux-gnu -c $< -o $@
 
-INTEGRATION_TESTS := veth_counts policy_live synflood
+INTEGRATION_TESTS := veth_counts tunnel policy_live synflood
 
 # Does not build the Rust binaries: under sudo, cargo is usually not on PATH.
 test-integration: bpf $(PASS_OBJ)

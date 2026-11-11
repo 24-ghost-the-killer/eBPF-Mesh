@@ -18,7 +18,7 @@
 #include <string.h>
 #include <assert.h>
 
-#define PKT_MAX 1024
+#define PKT_MAX 2048
 
 struct pkt {
 	uint8_t b[PKT_MAX];

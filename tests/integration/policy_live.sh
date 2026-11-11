@@ -6,19 +6,19 @@
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
-lab_up
+lab_up tunnel
 
 # ---- rate limit -------------------------------------------------------------
-ctl policy set --mitigate on --pps-per-src 100 --burst 100 >/dev/null
+ctl policy set --asset "$ASSET" --mitigate on --pps-per-src 100 --burst 100 >/dev/null
 gen udp --dst "$PROTECTED" --dport 53 --src 203.0.113.50/32 --count 3000 >/dev/null
 sleep 0.3
 rl=$(count drop_ratelimit)
-ok=$(count pass)
+ok=$(count pass) # includes a few ICMP errors the origin and router send back
 [ "$rl" -ge 2000 ] && pass "single-source flood rate limited ($rl dropped)" \
 	|| fail "only $rl packets rate limited"
 [ "$ok" -le 400 ] && pass "rate limit let through about the burst ($ok passed)" \
 	|| fail "$ok packets passed the rate limit"
-ctl policy set --pps-per-src 0 >/dev/null
+ctl policy set --asset "$ASSET" --pps-per-src 0 >/dev/null
 http_ok && pass "other source unaffected by the rate limit" || fail "HTTP failed"
 
 # ---- block / allow ------------------------------------------------------------
@@ -38,12 +38,12 @@ http_ok && pass "block del takes effect" || fail "still blocked after block del"
 
 # ---- observe vs mitigate ------------------------------------------------------
 ctl block add "$CLIENT/32" --ttl 1m >/dev/null
-ctl policy set --mitigate off >/dev/null
+ctl policy set --asset "$ASSET" --mitigate off >/dev/null
 before=$(count drop_block)
 http_ok && pass "observe mode: blocked client still connects" || fail "observe mode dropped"
 [ "$(count drop_block)" -gt "$before" ] && pass "observe mode: block verdicts still counted" \
 	|| fail "observe mode: no block verdicts counted"
-ctl policy set --mitigate on >/dev/null
+ctl policy set --asset "$ASSET" --mitigate on >/dev/null
 ctl observe on >/dev/null
 http_ok && pass "kill switch: mitigation suspended" || fail "kill switch did not suspend drops"
 ctl observe off >/dev/null
@@ -59,8 +59,8 @@ http_ok && pass "block expired inside XDP without userspace" || fail "expired bl
 [ "$(ctl --json block list | jq length)" -eq 0 ] && pass "block list empty after gc" || fail "rules left after gc"
 
 # ---- allowed services -------------------------------------------------------------
-ctl service add --proto tcp --port 80 >/dev/null
-ctl policy set --enforce-services on >/dev/null
+ctl service add --asset "$ASSET" --proto tcp --port 80 >/dev/null
+ctl policy set --asset "$ASSET" --enforce-services on >/dev/null
 http_ok && pass "tcp/80 allowed" || fail "tcp/80 blocked"
 before=$(count drop_service)
 gen udp --dst "$PROTECTED" --dport 53 --src 203.0.113.60/32 --count 100 >/dev/null
@@ -72,8 +72,6 @@ sleep 0.3
 
 # ---- traffic to the PoP itself bypasses policy ------------------------------------
 before=$(count pass_local)
-ina ip route add "$POP_IP/32" dev "$VA"
-ina ip neigh add "$POP_IP" lladdr "$MAC_B" dev "$VA" nud permanent
 ina ping -c 3 -i 0.05 -W 2 "$POP_IP" >/dev/null && pass "PoP unicast IP reachable despite services" \
 	|| fail "ping to the PoP unicast IP failed"
 [ $(($(count pass_local) - before)) -eq 3 ] && pass "counted as pass_local" || fail "pass_local not counted"

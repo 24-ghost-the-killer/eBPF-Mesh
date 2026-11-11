@@ -250,7 +250,7 @@ static uint32_t expect_challenge(const char *name, const struct pkt *in,
 
 static int verified_until(const uint8_t addr16[16], uint64_t *exp)
 {
-	struct xs_addr_key k = { .tenant = 0 };
+	struct xs_addr_key k = { .tenant = TEST_TENANT };
 
 	memcpy(k.addr, addr16, 16);
 	return bpf_map_lookup_elem(fd.verified, &k, exp) == 0;
@@ -343,7 +343,7 @@ static void local_and_bogons(void)
 			set_src4(&p, ip, ok4[i][0], ok4[i][1], ok4[i][2], ok4[i][3]);
 			snprintf(name, sizeof(name), "not-bogon/%u.%u.%u.%u", ok4[i][0],
 				 ok4[i][1], ok4[i][2], ok4[i][3]);
-			expect(name, &p, XDP_PASS, XS_V_PASS, NULL);
+			expect(name, &p, XDP_TX, XS_V_PASS, NULL);
 		}
 	}
 	{
@@ -366,7 +366,7 @@ static void local_and_bogons(void)
 			ip = udp6(&p, 53);
 			set_src6(&p, ip, ok6[i]);
 			snprintf(name, sizeof(name), "not-bogon/%s", ok6[i]);
-			expect(name, &p, XDP_PASS, XS_V_PASS, NULL);
+			expect(name, &p, XDP_TX, XS_V_PASS, NULL);
 		}
 	}
 	c.flags = XS_CFG_F_OBSERVE;
@@ -374,7 +374,7 @@ static void local_and_bogons(void)
 	p = (struct pkt){ 0 };
 	ip = udp4(&p, 53);
 	set_src4(&p, ip, 10, 0, 0, 1);
-	expect("bogon/global observe passes", &p, XDP_PASS, XS_V_DROP_BOGON, NULL);
+	expect("bogon/global observe passes", &p, XDP_TX, XS_V_DROP_BOGON, NULL);
 }
 
 static void rules(void)
@@ -394,30 +394,33 @@ static void rules(void)
 	add_rule4(fd.block, 0, net24, 24, now + 60 * NSEC);
 	expect("block/active /24", &p, XDP_DROP, XS_V_DROP_BLOCK, NULL);
 	set_policy(0, 0, 0);
-	expect("block/observe counts but passes", &p, XDP_PASS, XS_V_DROP_BLOCK, NULL);
+	expect("block/observe counts but passes", &p, XDP_TX, XS_V_DROP_BLOCK, NULL);
 	set_policy(XS_P_MITIGATE, 0, 0);
 
 	add_rule4(fd.block, 0, net24, 24, now - 1);
-	expect("block/expired is ignored", &p, XDP_PASS, XS_V_PASS, NULL);
+	expect("block/expired is ignored", &p, XDP_TX, XS_V_PASS, NULL);
 	add_rule4(fd.block, 0, net24, 24, 0);
-	expect("block/without expiry is ignored", &p, XDP_PASS, XS_V_PASS, NULL);
+	expect("block/without expiry is ignored", &p, XDP_TX, XS_V_PASS, NULL);
 	add_rule4(fd.block, 5, net24, 24, now + 60 * NSEC);
-	expect("block/other tenant does not match", &p, XDP_PASS, XS_V_PASS, NULL);
+	expect("block/other tenant does not match", &p, XDP_TX, XS_V_PASS, NULL);
+	add_rule4(fd.block, TEST_TENANT, net24, 24, now + 60 * NSEC);
+	expect("block/own tenant matches", &p, XDP_DROP, XS_V_DROP_BLOCK, NULL);
+	add_rule4(fd.block, TEST_TENANT, net24, 24, now - 1);
 
 	add_rule4(fd.block, 0, net24, 24, now + 60 * NSEC);
 	add_rule4(fd.allow, 0, host, 32, 0);
-	expect("allow/permanent beats block", &p, XDP_PASS, XS_V_PASS_ALLOW, NULL);
+	expect("allow/permanent beats block", &p, XDP_TX, XS_V_PASS_ALLOW, NULL);
 	add_rule4(fd.allow, 0, host, 32, now - 1);
 	expect("allow/expired no longer wins", &p, XDP_DROP, XS_V_DROP_BLOCK, NULL);
 	add_rule4(fd.allow, 0, host, 32, now + 60 * NSEC);
-	expect("allow/with ttl beats block", &p, XDP_PASS, XS_V_PASS_ALLOW, NULL);
+	expect("allow/with ttl beats block", &p, XDP_TX, XS_V_PASS_ALLOW, NULL);
 
 	p = (struct pkt){ 0 };
 	udp6(&p, 53);
 	add_rule6(fd.block6, 0, net6, 48, now + 60 * NSEC);
 	expect("block/ipv6 /48", &p, XDP_DROP, XS_V_DROP_BLOCK, NULL);
 	add_rule6(fd.allow6, 0, SRC6, 128, 0);
-	expect("allow/ipv6 /128 beats block", &p, XDP_PASS, XS_V_PASS_ALLOW, NULL);
+	expect("allow/ipv6 /128 beats block", &p, XDP_TX, XS_V_PASS_ALLOW, NULL);
 
 	/* Allowlisted sources skip services and rate limits. */
 	reset_state();
@@ -426,8 +429,8 @@ static void rules(void)
 	udp4(&p, 9999);
 	expect("allow/without rule: service dropped", &p, XDP_DROP, XS_V_DROP_SERVICE, NULL);
 	add_rule4(fd.allow, 0, host, 32, 0);
-	expect("allow/skips services #1", &p, XDP_PASS, XS_V_PASS_ALLOW, NULL);
-	expect("allow/skips rate limit #2", &p, XDP_PASS, XS_V_PASS_ALLOW, NULL);
+	expect("allow/skips services #1", &p, XDP_TX, XS_V_PASS_ALLOW, NULL);
+	expect("allow/skips rate limit #2", &p, XDP_TX, XS_V_PASS_ALLOW, NULL);
 }
 
 static void services_and_fragments(void)
@@ -442,10 +445,10 @@ static void services_and_fragments(void)
 
 	p = (struct pkt){ 0 };
 	tcp4(&p, TCP_SYN, 443);
-	expect("services/tcp 443 allowed", &p, XDP_PASS, XS_V_PASS, NULL);
+	expect("services/tcp 443 allowed", &p, XDP_TX, XS_V_PASS, NULL);
 	p = (struct pkt){ 0 };
 	tcp6(&p, TCP_SYN, 443);
-	expect("services/tcp 443 allowed (ipv6)", &p, XDP_PASS, XS_V_PASS, NULL);
+	expect("services/tcp 443 allowed (ipv6)", &p, XDP_TX, XS_V_PASS, NULL);
 	p = (struct pkt){ 0 };
 	tcp4(&p, TCP_SYN, 80);
 	expect("services/tcp 80 dropped", &p, XDP_DROP, XS_V_DROP_SERVICE, NULL);
@@ -453,12 +456,12 @@ static void services_and_fragments(void)
 	udp4(&p, 53);
 	expect("services/udp 53 dropped", &p, XDP_DROP, XS_V_DROP_SERVICE, NULL);
 	add_service(IPPROTO_UDP, 0);
-	expect("services/udp port 0 allows all ports", &p, XDP_PASS, XS_V_PASS, NULL);
+	expect("services/udp port 0 allows all ports", &p, XDP_TX, XS_V_PASS, NULL);
 	p = (struct pkt){ 0 };
 	icmp4(&p);
 	expect("services/icmp dropped", &p, XDP_DROP, XS_V_DROP_SERVICE, NULL);
 	add_service(IPPROTO_ICMP, 0);
-	expect("services/icmp allowed", &p, XDP_PASS, XS_V_PASS, NULL);
+	expect("services/icmp allowed", &p, XDP_TX, XS_V_PASS, NULL);
 	p = (struct pkt){ 0 };
 	icmp6_type(&p, 128);
 	expect("services/icmpv6 dropped", &p, XDP_DROP, XS_V_DROP_SERVICE, NULL);
@@ -469,14 +472,14 @@ static void services_and_fragments(void)
 	ip = icmp4(&p);
 	p.b[ip + 20] = 3; /* destination unreachable */
 	p.b[ip + 21] = 4; /* fragmentation needed */
-	expect("services/icmp frag-needed passes", &p, XDP_PASS, XS_V_PASS, NULL);
+	expect("services/icmp frag-needed passes", &p, XDP_TX, XS_V_PASS, NULL);
 	p.b[ip + 20] = 11;
-	expect("services/icmp time-exceeded passes", &p, XDP_PASS, XS_V_PASS, NULL);
+	expect("services/icmp time-exceeded passes", &p, XDP_TX, XS_V_PASS, NULL);
 	p.b[ip + 20] = 5;
 	expect("services/icmp redirect dropped", &p, XDP_DROP, XS_V_DROP_SERVICE, NULL);
 	p = (struct pkt){ 0 };
 	icmp6_type(&p, 2);
-	expect("services/icmpv6 packet-too-big passes", &p, XDP_PASS, XS_V_PASS, NULL);
+	expect("services/icmpv6 packet-too-big passes", &p, XDP_TX, XS_V_PASS, NULL);
 	p = (struct pkt){ 0 };
 	icmp6_type(&p, 129);
 	expect("services/icmpv6 echo reply dropped", &p, XDP_DROP, XS_V_DROP_SERVICE, NULL);
@@ -495,7 +498,7 @@ static void services_and_fragments(void)
 	set_policy(XS_P_MITIGATE, 0, 0);
 	p = (struct pkt){ 0 };
 	tcp4(&p, TCP_SYN, 80);
-	expect("services/not enforced", &p, XDP_PASS, XS_V_PASS, NULL);
+	expect("services/not enforced", &p, XDP_TX, XS_V_PASS, NULL);
 
 	/* Non-first fragment (offset 800 bytes). */
 	p = (struct pkt){ 0 };
@@ -505,9 +508,9 @@ static void services_and_fragments(void)
 	fix_ipv4_len(&p, ip);
 	expect("fragments/dropped by default", &p, XDP_DROP, XS_V_DROP_FRAGMENT, NULL);
 	set_policy(0, 0, 0);
-	expect("fragments/observe passes", &p, XDP_PASS, XS_V_DROP_FRAGMENT, NULL);
+	expect("fragments/observe passes", &p, XDP_TX, XS_V_DROP_FRAGMENT, NULL);
 	set_policy(XS_P_MITIGATE | XS_P_ALLOW_FRAG | XS_P_SERVICES, 0, 0);
-	expect("fragments/allowed skip services", &p, XDP_PASS, XS_V_FRAGMENT, NULL);
+	expect("fragments/allowed skip services", &p, XDP_TX, XS_V_FRAGMENT, NULL);
 
 	/* A first fragment carries ports, so services apply. */
 	reset_state();
@@ -524,7 +527,7 @@ static void services_and_fragments(void)
 static void rate_limit(void)
 {
 	struct pkt p = { 0 };
-	struct xs_addr_key k = { .tenant = 0 };
+	struct xs_addr_key k = { .tenant = TEST_TENANT };
 	struct xs_rl b;
 	size_t ip;
 
@@ -532,9 +535,9 @@ static void rate_limit(void)
 	reset_state();
 	set_policy(XS_P_MITIGATE, 10, 3);
 	udp4(&p, 53);
-	expect("ratelimit/burst 1 of 3", &p, XDP_PASS, XS_V_PASS, NULL);
-	expect("ratelimit/burst 2 of 3", &p, XDP_PASS, XS_V_PASS, NULL);
-	expect("ratelimit/burst 3 of 3", &p, XDP_PASS, XS_V_PASS, NULL);
+	expect("ratelimit/burst 1 of 3", &p, XDP_TX, XS_V_PASS, NULL);
+	expect("ratelimit/burst 2 of 3", &p, XDP_TX, XS_V_PASS, NULL);
+	expect("ratelimit/burst 3 of 3", &p, XDP_TX, XS_V_PASS, NULL);
 	expect("ratelimit/4th dropped", &p, XDP_DROP, XS_V_DROP_RATELIMIT, NULL);
 	expect("ratelimit/5th dropped", &p, XDP_DROP, XS_V_DROP_RATELIMIT, NULL);
 
@@ -544,27 +547,27 @@ static void rate_limit(void)
 		check("ratelimit/bucket exists", 0, "no xs_rl entry for 203.0.113.7");
 	b.last_ns -= 150 * 1000000ULL;
 	bpf_map_update_elem(fd.rl, &k, &b, BPF_EXIST);
-	expect("ratelimit/refilled one token", &p, XDP_PASS, XS_V_PASS, NULL);
+	expect("ratelimit/refilled one token", &p, XDP_TX, XS_V_PASS, NULL);
 	expect("ratelimit/half a token is not enough", &p, XDP_DROP, XS_V_DROP_RATELIMIT, NULL);
 
 	/* Long idle: refill caps at the burst. */
 	bpf_map_lookup_elem(fd.rl, &k, &b);
 	b.last_ns -= 10 * NSEC; /* full refill needs 0.3 s; boot clock may be young */
 	bpf_map_update_elem(fd.rl, &k, &b, BPF_EXIST);
-	expect("ratelimit/after idle 1 of 3", &p, XDP_PASS, XS_V_PASS, NULL);
-	expect("ratelimit/after idle 2 of 3", &p, XDP_PASS, XS_V_PASS, NULL);
-	expect("ratelimit/after idle 3 of 3", &p, XDP_PASS, XS_V_PASS, NULL);
+	expect("ratelimit/after idle 1 of 3", &p, XDP_TX, XS_V_PASS, NULL);
+	expect("ratelimit/after idle 2 of 3", &p, XDP_TX, XS_V_PASS, NULL);
+	expect("ratelimit/after idle 3 of 3", &p, XDP_TX, XS_V_PASS, NULL);
 	expect("ratelimit/after idle capped at burst", &p, XDP_DROP, XS_V_DROP_RATELIMIT, NULL);
 
 	p = (struct pkt){ 0 };
 	ip = udp4(&p, 53);
 	set_src4(&p, ip, 203, 0, 113, 8);
-	expect("ratelimit/other source has its own bucket", &p, XDP_PASS, XS_V_PASS, NULL);
+	expect("ratelimit/other source has its own bucket", &p, XDP_TX, XS_V_PASS, NULL);
 
 	set_policy(0, 10, 3);
 	p = (struct pkt){ 0 };
 	udp4(&p, 53);
-	expect("ratelimit/observe counts but passes", &p, XDP_PASS, XS_V_DROP_RATELIMIT, NULL);
+	expect("ratelimit/observe counts but passes", &p, XDP_TX, XS_V_DROP_RATELIMIT, NULL);
 
 	/* IPv6 sources share a bucket per /64. burst 0 = pps. */
 	reset_state();
@@ -572,13 +575,13 @@ static void rate_limit(void)
 	p = (struct pkt){ 0 };
 	ip = udp6(&p, 53);
 	set_src6(&p, ip, "2001:db8:ffff::7");
-	expect("ratelimit/ipv6 /64 #1", &p, XDP_PASS, XS_V_PASS, NULL);
+	expect("ratelimit/ipv6 /64 #1", &p, XDP_TX, XS_V_PASS, NULL);
 	set_src6(&p, ip, "2001:db8:ffff::8");
-	expect("ratelimit/ipv6 /64 #2 (other host)", &p, XDP_PASS, XS_V_PASS, NULL);
+	expect("ratelimit/ipv6 /64 #2 (other host)", &p, XDP_TX, XS_V_PASS, NULL);
 	set_src6(&p, ip, "2001:db8:ffff::9");
 	expect("ratelimit/ipv6 /64 shared bucket empty", &p, XDP_DROP, XS_V_DROP_RATELIMIT, NULL);
 	set_src6(&p, ip, "2001:db8:ffff:1::7");
-	expect("ratelimit/ipv6 other /64", &p, XDP_PASS, XS_V_PASS, NULL);
+	expect("ratelimit/ipv6 other /64", &p, XDP_TX, XS_V_PASS, NULL);
 }
 
 static void syn_cookies(void)
@@ -623,12 +626,12 @@ static void syn_cookies(void)
 		      exp < boot_ns() + 301 * NSEC,
 	      "missing or wrong expiry");
 
-	expect("syncookie/SYN from verified source passes", &syn, XDP_PASS, XS_V_PASS, NULL);
-	expect("syncookie/ACK from verified source passes", &ack, XDP_PASS, XS_V_PASS, NULL);
+	expect("syncookie/SYN from verified source passes", &syn, XDP_TX, XS_V_PASS, NULL);
+	expect("syncookie/ACK from verified source passes", &ack, XDP_TX, XS_V_PASS, NULL);
 
 	/* Verification expires. */
 	{
-		struct xs_addr_key k = { .tenant = 0 };
+		struct xs_addr_key k = { .tenant = TEST_TENANT };
 		uint64_t past = boot_ns() - 1;
 
 		memcpy(k.addr, a7, 16);
@@ -640,7 +643,7 @@ static void syn_cookies(void)
 		/* Refresh: an entry close to expiry is extended by traffic. */
 		past = boot_ns() + 10 * NSEC;
 		bpf_map_update_elem(fd.verified, &k, &past, BPF_ANY);
-		expect("syncookie/verified traffic refreshes", &ack, XDP_PASS, XS_V_PASS, NULL);
+		expect("syncookie/verified traffic refreshes", &ack, XDP_TX, XS_V_PASS, NULL);
 		check("syncookie/refreshed to ~300s",
 		      verified_until(a7, &exp) && exp > boot_ns() + 290 * NSEC,
 		      "entry not refreshed");
@@ -691,7 +694,7 @@ static void syn_cookies(void)
 	syn = (struct pkt){ 0 };
 	ip = udp4(&syn, 53);
 	set_src4(&syn, ip, 203, 0, 113, 22);
-	expect("syncookie/UDP unaffected", &syn, XDP_PASS, XS_V_PASS, NULL);
+	expect("syncookie/UDP unaffected", &syn, XDP_TX, XS_V_PASS, NULL);
 
 	/* IPv6 and VLAN challenges, exact bytes. */
 	syn = (struct pkt){ 0 };
@@ -712,20 +715,22 @@ static void syn_cookies(void)
 	ip = tcp4(&syn, TCP_SYN, 80);
 	set_src4(&syn, ip, 203, 0, 113, 40);
 	set_policy(XS_P_SYNCOOKIE | XS_P_SERVICES, 0, 0);
-	expect("syncookie/observe: counted, passed", &syn, XDP_PASS,
+	expect("syncookie/observe: counted, passed", &syn, XDP_TX,
 	       XS_V_TX_SYN_CHALLENGE, &out);
-	check("syncookie/observe: frame unchanged",
-	      out.len == syn.len && !memcmp(out.b, syn.b, syn.len), "frame modified");
+	check("syncookie/observe: delivered unchanged through the tunnel",
+	      out.len == syn.len + 20 && !memcmp(out.b + 34, syn.b + 14, syn.len - 14),
+	      "inner frame modified");
 	set_policy(XS_P_MITIGATE | XS_P_SYNCOOKIE | XS_P_SERVICES, 0, 0);
 	c.flags = XS_CFG_F_OBSERVE;
 	set_cfg(&c);
-	expect("syncookie/kill switch: counted, passed", &syn, XDP_PASS,
+	expect("syncookie/kill switch: counted, passed", &syn, XDP_TX,
 	       XS_V_TX_SYN_CHALLENGE, &out);
-	check("syncookie/kill switch: frame unchanged",
-	      out.len == syn.len && !memcmp(out.b, syn.b, syn.len), "frame modified");
+	check("syncookie/kill switch: delivered unchanged through the tunnel",
+	      out.len == syn.len + 20 && !memcmp(out.b + 34, syn.b + 14, syn.len - 14),
+	      "inner frame modified");
 	c = (struct xs_cfg){ 0 };
-	set_cfg(&c);
-	expect("syncookie/no key: fail open", &syn, XDP_PASS, XS_V_PASS, NULL);
+	set_cfg(&c); /* PoP IP only: no SYN-cookie key */
+	expect("syncookie/no key: fail open", &syn, XDP_TX, XS_V_PASS, NULL);
 }
 
 static void siphash_vectors(void)

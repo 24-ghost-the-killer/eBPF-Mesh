@@ -5,16 +5,16 @@
 # normal HTTP request still succeeds.
 #
 # 1. Mitigate: spoofed SYN flood (sentinel-gen) + a real HTTP request with
-#    curl. The flood must never reach the server's TCP stack; curl must get
-#    the page (after one SYN-cookie round trip).
+#    curl. The flood must never reach the origin's TCP stack (behind the
+#    tunnel); curl must get the page (after one SYN-cookie round trip).
 # 2. Control: the same flood in observe mode does reach the server, which
 #    proves step 1 measured something real.
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
-lab_up
-ctl service add --proto tcp --port 80 >/dev/null
-ctl policy set --mitigate on --syncookies on --enforce-services on >/dev/null
+lab_up tunnel
+ctl service add --asset "$ASSET" --proto tcp --port 80 >/dev/null
+ctl policy set --asset "$ASSET" --mitigate on --syncookies on --enforce-services on >/dev/null
 
 # ---- 1. mitigate ------------------------------------------------------------
 segs0=$(tcp_snmp InSegs)
@@ -41,7 +41,7 @@ sent=$(grep -o 'sent [0-9]*' "$WORK/gen.log" | awk '{print $2}')
 chal=$(($(count tx_syn_challenge) - chal0))
 segs=$(($(tcp_snmp InSegs) - segs0))
 opens=$(($(tcp_snmp PassiveOpens) - opens0))
-synrecv=$(inb ss -Htn state syn-recv | wc -l)
+synrecv=$(inc ss -Htn state syn-recv | wc -l)
 
 [ "$chal" -ge $((sent / 2)) ] && pass "flood SYNs answered by XDP challenges ($chal of $sent sent)" \
 	|| fail "only $chal challenges for $sent flood SYNs"
@@ -57,7 +57,7 @@ synrecv=$(inb ss -Htn state syn-recv | wc -l)
 ctl stats | sed 's/^/     | /'
 
 # ---- 2. control: observe mode lets the flood through -------------------------
-ctl policy set --mitigate off >/dev/null
+ctl policy set --asset "$ASSET" --mitigate off >/dev/null
 segs0=$(tcp_snmp InSegs)
 gen syn --dst "$PROTECTED" --dport 80 --src "$FLOOD_SRC" --count 5000 >"$WORK/gen2.log" 2>&1
 sleep 0.5

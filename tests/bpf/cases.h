@@ -372,9 +372,10 @@ static void c_ipv6_udp_truncated(struct pkt *p)
 	fix_ipv6_len(p, ip);
 }
 
-#define PASS(n) { #n, c_##n, XDP_PASS, XS_V_PASS }
+/* Valid IP frames have an asset and are tunnelled (XDP_TX). */
+#define PASS(n) { #n, c_##n, XDP_TX, XS_V_PASS }
 #define NONIP(n) { #n, c_##n, XDP_PASS, XS_V_PASS_NON_IP }
-#define FRAG(n) { #n, c_##n, XDP_PASS, XS_V_FRAGMENT }
+#define FRAG(n) { #n, c_##n, XDP_TX, XS_V_FRAGMENT }
 #define BAD(n) { #n, c_##n, XDP_DROP, XS_V_DROP_MALFORMED }
 
 static const struct xs_case xs_cases[] = {

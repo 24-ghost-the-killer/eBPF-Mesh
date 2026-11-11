@@ -93,7 +93,9 @@ fi
 [ "$(xdp_mode)" = none ] && pass "nothing attached after refusal" \
 	|| fail "XDP attached after refused generic attach"
 
-ctl attach --iface "$VB" --obj "$BPF_OBJ" >/dev/null
+# B's own address is the PoP IP: pings to it are pass_local. Nothing is
+# protected here, so frames to 198.51.100.10 count as drop_no_tenant.
+ctl attach --iface "$VB" --obj "$BPF_OBJ" --pop-ip4 "$IP_B" >/dev/null
 [ "$(xdp_mode)" = 1 ] && pass "attached in native mode" \
 	|| fail "expected native XDP (mode 1), got $(xdp_mode)"
 
@@ -128,14 +130,14 @@ send malformed "$N_MALFORMED"
 sleep 0.5 # veth XDP runs in NAPI; let it drain
 
 stats=$(ctl stats --json)
-want_pass=$((PINGS + N_VALID4 + N_VALID6 + N_VLAN4 + N_QINQ6))
+want_no_tenant=$((N_VALID4 + N_VALID6 + N_VLAN4 + N_QINQ6 + N_FRAG4 + N_FRAG6))
 check() { # check <verdict> <want>
 	local got
 	got=$(count "$stats" "$1")
 	[ "$got" -eq "$2" ] && pass "counter $1 = $2" || fail "counter $1 = $got, want $2"
 }
-check pass "$want_pass"
-check drop_fragment $((N_FRAG4 + N_FRAG6)) # observe mode: counted, passed
+check pass_local "$PINGS"
+check drop_no_tenant "$want_no_tenant"
 check pass_non_ip "$N_NONIP"
 check drop_malformed "$N_MALFORMED"
 total_bytes=$(jq '[.entries[].bytes] | add' <<<"$stats")
