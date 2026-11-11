@@ -22,5 +22,13 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
         fonts-liberation fonts-noto-color-emoji \
     && rm -rf /var/lib/apt/lists/*
 
+# The anycast lab (phase 8): containerlab drives the host's Docker through
+# its socket; the Docker CLI is only used by the lab scripts.
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        docker-cli \
+    && rm -rf /var/lib/apt/lists/*
+COPY install-containerlab.sh /tmp/install-containerlab.sh
+RUN sh /tmp/install-containerlab.sh && rm /tmp/install-containerlab.sh
+
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 WORKDIR /src

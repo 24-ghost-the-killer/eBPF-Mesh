@@ -9,6 +9,7 @@
 #   sudo make test-e2e      Playwright onboarding/isolation tests against the lab
 #   make docker-test        everything above inside a privileged container
 #                           (use this on macOS)
+#   make lab-test           anycast lab (containerlab): regions, PoPs, drain, failover
 #
 # The repo path may contain spaces: only relative paths are used in targets.
 
@@ -38,7 +39,7 @@ DOCKER_VOLS   = -v "$(CURDIR)":/src \
 DOCKER_RUN    = docker run --rm --privileged $(DOCKER_VOLS) $(DOCKER_IMAGE)
 
 .PHONY: all build bpf rust test lint test-api test-bpf test-integration test-all \
-	web-install test-web test-e2e docker-image docker-test docker-shell lab-up clean help
+	web-install test-web test-e2e docker-image docker-test docker-shell lab-up lab-down lab-test clean help
 
 all: build
 
@@ -123,8 +124,25 @@ docker-test: docker-image
 docker-shell: docker-image
 	docker run --rm -it --privileged $(DOCKER_VOLS) $(DOCKER_IMAGE) bash
 
-lab-up:
-	@echo "lab-up: the containerlab anycast lab arrives in phase 8"; exit 1
+# The anycast lab (containerlab on the host's Docker, ADR 0023). The runner
+# container gets the Docker socket, host network/PID namespaces and the repo
+# at the same path as on the host (containerlab bind mounts are host paths).
+LAB_RUN = docker run --rm --privileged --network host --pid host \
+	-v /var/run/docker.sock:/var/run/docker.sock -v /var/run/netns:/var/run/netns \
+	-v "$(CURDIR)":"$(CURDIR)" -w "$(CURDIR)" \
+	-v sentinel-cargo:/usr/local/cargo/registry -v sentinel-target:/target \
+	-e CARGO_TARGET_DIR=/target -e KEEP $(DOCKER_IMAGE)
+
+lab-up: docker-image
+	$(LAB_RUN) lab/scripts/lab.sh up
+
+lab-down: docker-image
+	$(LAB_RUN) lab/scripts/lab.sh down
+
+# Phase 8 acceptance: bots per region hit their PoP; drain / agent kill /
+# node crash move traffic (KEEP=1 leaves the lab running afterwards).
+lab-test: docker-image
+	$(LAB_RUN) lab/scripts/lab.sh test
 
 clean:
 	$(MAKE) -C ebpf clean
@@ -132,4 +150,4 @@ clean:
 	$(CARGO) clean
 
 help:
-	@sed -n '2,14p' Makefile
+	@sed -n '2,15p' Makefile
