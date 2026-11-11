@@ -85,6 +85,18 @@ struct {
 } xs_verified SEC(".maps");
 
 struct {
+	__uint(type, BPF_MAP_TYPE_RINGBUF);
+	__uint(max_entries, XS_EVENTS_RINGBUF_SIZE);
+} xs_events SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, XS_C__COUNT);
+	__type(key, __u32);
+	__type(value, __u64);
+} xs_counters SEC(".maps");
+
+struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_HASH);
 	__uint(max_entries, XS_STATS_MAX_ENTRIES);
 	__type(key, struct xs_stats_key);

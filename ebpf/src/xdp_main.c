@@ -14,13 +14,13 @@
  *   6. blocklist (unexpired) -> drop                     [policy]
  *   7. allowed services / fragments -> drop the rest     [policy]
  *   8. per-source token bucket; SYN-cookie verification  [policy]
+ *   9. sample 1 in N parsed packets (any verdict) to xs_events
  *  10. deliver: encapsulate to the asset's origin, XDP_TX
  *
  * [global] drops obey only the XS_CFG_F_OBSERVE kill switch. [policy] drops
  * and challenges happen only when the asset's policy has XS_P_MITIGATE (and
  * the kill switch is off). In observe mode the verdict is counted and the
- * packet is still delivered through the tunnel. (Step 9, sampling, arrives
- * with the agent in phase 4.)
+ * packet is still delivered through the tunnel.
  */
 #include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
@@ -51,13 +51,65 @@ static __always_inline void xs_count(__u32 tenant, __u32 verdict, __u64 bytes)
 	val->bytes += bytes;
 }
 
+/*
+ * Step 9: sample 1 in cfg->sample_rate packets into the ring buffer for the
+ * agent's flow telemetry. Global function, verified once.
+ */
+__attribute__((noinline)) int xs_sample(struct xs_pkt *pkt, __u32 tenant,
+					__u32 asset, __u32 verdict, __u32 len)
+{
+	__u32 zero = 0, rate;
+	const struct xs_cfg *cfg = bpf_map_lookup_elem(&xs_cfg, &zero);
+	struct xs_event *e;
+
+	if (!pkt || !cfg || !cfg->sample_rate)
+		return 0;
+	rate = cfg->sample_rate;
+	if (rate > 1 && bpf_get_prandom_u32() % rate)
+		return 0;
+	e = bpf_ringbuf_reserve(&xs_events, sizeof(*e), 0);
+	if (!e) {
+		__u64 *lost = bpf_map_lookup_elem(&xs_counters, &zero); /* XS_C_EVENTS_LOST */
+
+		if (lost)
+			(*lost)++;
+		return 0;
+	}
+	e->ts = bpf_ktime_get_boot_ns();
+	e->tenant = tenant;
+	e->asset = asset;
+	if (pkt->l3_proto == ETH_P_IP) {
+		__builtin_memset(e->src, 0, 10);
+		e->src[10] = e->src[11] = 0xff;
+		__builtin_memcpy(&e->src[12], &pkt->src4, 4);
+		__builtin_memset(e->dst, 0, 10);
+		e->dst[10] = e->dst[11] = 0xff;
+		__builtin_memcpy(&e->dst[12], &pkt->dst4, 4);
+		e->family = 4;
+	} else {
+		__builtin_memcpy(e->src, &pkt->src6, 16);
+		__builtin_memcpy(e->dst, &pkt->dst6, 16);
+		e->family = 6;
+	}
+	e->sport = pkt->sport;
+	e->dport = pkt->dport;
+	e->proto = pkt->l4_proto;
+	e->tcp_flags = pkt->tcp_flags;
+	e->verdict = verdict;
+	e->len = len > 0xffff ? 0xffff : len;
+	e->_pad = 0;
+	e->sample_rate = rate;
+	bpf_ringbuf_submit(e, 0);
+	return 1;
+}
+
 SEC("xdp")
 int xs_xdp(struct xdp_md *ctx)
 {
 	void *data = (void *)(long)ctx->data;
 	void *data_end = (void *)(long)ctx->data_end;
 	__u32 pkt_len = data_end - data;
-	__u32 zero = 0, verdict, fail, tenant = XS_TENANT_GLOBAL;
+	__u32 zero = 0, verdict, fail, tenant = XS_TENANT_GLOBAL, asset_id = 0;
 	const struct xs_cfg *cfg = bpf_map_lookup_elem(&xs_cfg, &zero);
 	int global_observe = cfg && (cfg->flags & XS_CFG_F_OBSERVE);
 	const struct xs_asset *a;
@@ -77,12 +129,14 @@ int xs_xdp(struct xdp_md *ctx)
 		goto out;
 	}
 	if (xs_is_return(&pkt, cfg)) {
+		/* Origins' replies: not sampled (telemetry is about inbound). */
 		verdict = xs_return(ctx, &pkt, &tenant);
 		if (verdict == XS_V_TX_RETURN)
 			action = XDP_TX;
 		else
 			action = global_observe ? XDP_PASS : XDP_DROP;
-		goto out;
+		xs_count(tenant, verdict, pkt_len);
+		return action;
 	}
 	if (xs_is_local(&pkt, cfg)) {
 		verdict = XS_V_PASS_LOCAL;
@@ -94,6 +148,7 @@ int xs_xdp(struct xdp_md *ctx)
 	if (a) {
 		asset = *a; /* stack copy for the global functions */
 		tenant = asset.tenant;
+		asset_id = asset.asset;
 	}
 
 	if (xs_is_bogon(&pkt)) {
@@ -142,6 +197,8 @@ deliver:
 out:
 	/* Bytes counted as received, before any rewrite. */
 	xs_count(tenant, verdict, pkt_len);
+	if (rc == XS_P_OK || rc == XS_P_FRAGMENT)
+		xs_sample(&pkt, tenant, asset_id, verdict, pkt_len);
 	return action;
 }
 

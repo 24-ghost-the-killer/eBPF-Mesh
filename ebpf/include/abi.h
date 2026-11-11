@@ -17,7 +17,7 @@
 
 #include <linux/types.h>
 
-#define XS_ABI_VERSION 3
+#define XS_ABI_VERSION 4
 
 /* Parser limits (compile-time bounds for the verifier). */
 #define XS_MAX_VLAN_TAGS 2
@@ -30,6 +30,7 @@
 #define XS_RL_MAX_ENTRIES 262144
 #define XS_VERIFIED_MAX_ENTRIES 262144
 #define XS_TENANTS_MAX_ENTRIES 65536
+#define XS_EVENTS_RINGBUF_SIZE (1 << 22) /* 4 MiB of sampled packet events */
 
 /* Tenant 0 means "global" / "no tenant". */
 #define XS_TENANT_GLOBAL 0
@@ -81,6 +82,12 @@ enum xs_verdict {
 	XS_V__COUNT = 19,           /* number of verdicts; not a verdict */
 };
 
+/* Global counters (xs_counters, PERCPU_ARRAY). Append-only. */
+enum xs_counter {
+	XS_C_EVENTS_LOST = 0, /* samples dropped: ring buffer full */
+	XS_C__COUNT = 1,
+};
+
 /* Why a rule exists (xs_rule.reason). Append-only. */
 enum xs_reason {
 	XS_R_NONE = 0,
@@ -97,6 +104,8 @@ struct xs_cfg {
 	__be32 tunnel_ep4;    /* anycast endpoint for origin replies; 0 = none */
 	__u8 nexthop_mac[6];  /* uplink router; all-zero = back to the sender */
 	__u16 uplink_mtu;     /* 0 = XS_DEFAULT_MTU */
+	__u32 sample_rate;    /* sample 1 in N packets to xs_events; 0 = off */
+	__u32 _pad;
 };
 
 /* Per-asset policy, embedded in struct xs_asset. */
@@ -173,6 +182,28 @@ struct xs_rl {
 
 /* xs_verified: LRU_HASH xs_addr_key -> __u64 expires_ns. */
 
+/*
+ * xs_events: RINGBUF of sampled packets (pipeline step 9). One record for
+ * both families: addresses are IPv4-mapped IPv6 (::ffff:a.b.c.d) for IPv4.
+ * Fields are as received, before any rewrite.
+ */
+struct xs_event {
+	__u64 ts;          /* CLOCK_BOOTTIME ns */
+	__u32 tenant;
+	__u32 asset;       /* 0 if no asset */
+	__u8 src[16];
+	__u8 dst[16];
+	__be16 sport;      /* 0 unless TCP/UDP */
+	__be16 dport;
+	__u8 proto;        /* IPPROTO_* */
+	__u8 tcp_flags;
+	__u8 verdict;      /* enum xs_verdict */
+	__u8 family;       /* 4 or 6 */
+	__u16 len;         /* frame length */
+	__u16 _pad;
+	__u32 sample_rate; /* 1 in N; scale counts by this */
+};
+
 /* xs_stats: PERCPU_HASH {tenant, verdict} -> {pkts, bytes}. */
 struct xs_stats_key {
 	__u32 tenant;
@@ -184,7 +215,7 @@ struct xs_stats_val {
 	__u64 bytes;
 };
 
-_Static_assert(sizeof(struct xs_cfg) == 56, "xs_cfg size");
+_Static_assert(sizeof(struct xs_cfg) == 64, "xs_cfg size");
 _Static_assert(_Alignof(struct xs_cfg) == 8, "xs_cfg align");
 _Static_assert(sizeof(struct xs_policy) == 16, "xs_policy size");
 _Static_assert(_Alignof(struct xs_policy) == 4, "xs_policy align");
@@ -206,6 +237,8 @@ _Static_assert(sizeof(struct xs_addr_key) == 20, "xs_addr_key size");
 _Static_assert(_Alignof(struct xs_addr_key) == 4, "xs_addr_key align");
 _Static_assert(sizeof(struct xs_rl) == 16, "xs_rl size");
 _Static_assert(_Alignof(struct xs_rl) == 8, "xs_rl align");
+_Static_assert(sizeof(struct xs_event) == 64, "xs_event size");
+_Static_assert(_Alignof(struct xs_event) == 8, "xs_event align");
 _Static_assert(sizeof(struct xs_stats_key) == 8, "xs_stats_key size");
 _Static_assert(_Alignof(struct xs_stats_key) == 4, "xs_stats_key align");
 _Static_assert(sizeof(struct xs_stats_val) == 16, "xs_stats_val size");
