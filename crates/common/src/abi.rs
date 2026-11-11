@@ -2,20 +2,35 @@
 //! Rust mirror of `ebpf/include/abi.h`.
 //!
 //! Every struct is `#[repr(C)]` with the same field order, explicit padding and
-//! compile-time size/alignment asserts. The test module parses `abi.h` and
-//! fails if any constant, enum value or struct size drifts between C and Rust.
+//! compile-time size/alignment asserts. Fields that are big-endian (`__be32`,
+//! `__be16`) in C are byte arrays here, so their byte order can never be
+//! confused. The test module parses `abi.h` and fails if any constant, enum
+//! value or struct layout drifts between C and Rust.
 
 use std::mem::{align_of, size_of};
+use std::net::{Ipv4Addr, Ipv6Addr};
 
-pub const XS_ABI_VERSION: u32 = 1;
+pub const XS_ABI_VERSION: u32 = 2;
 pub const XS_MAX_VLAN_TAGS: u32 = 2;
 pub const XS_MAX_IPV6_EXT_HDRS: u32 = 4;
 pub const XS_STATS_MAX_ENTRIES: u32 = 65536;
+pub const XS_RULES_MAX_ENTRIES: u32 = 65536;
+pub const XS_SERVICES_MAX_ENTRIES: u32 = 4096;
+pub const XS_RL_MAX_ENTRIES: u32 = 262144;
+pub const XS_VERIFIED_MAX_ENTRIES: u32 = 262144;
 pub const XS_TENANT_GLOBAL: u32 = 0;
+pub const XS_RL_V6_PREFIX: u32 = 64;
+pub const XS_VERIFY_TTL_DEFAULT_S: u32 = 300;
+
 pub const XS_CFG_F_OBSERVE: u32 = 1 << 0;
 
+pub const XS_P_MITIGATE: u32 = 1 << 0;
+pub const XS_P_SYNCOOKIE: u32 = 1 << 1;
+pub const XS_P_SERVICES: u32 = 1 << 2;
+pub const XS_P_ALLOW_FRAG: u32 = 1 << 3;
+
 /// Number of defined verdicts (`XS_V__COUNT`).
-pub const XS_V_COUNT: u32 = 4;
+pub const XS_V_COUNT: u32 = 14;
 
 /// Packet verdicts (`enum xs_verdict`). Append-only.
 #[repr(u32)]
@@ -25,6 +40,16 @@ pub enum Verdict {
     DropMalformed = 1,
     PassNonIp = 2,
     Fragment = 3,
+    PassLocal = 4,
+    DropBogon = 5,
+    PassAllow = 6,
+    DropBlock = 7,
+    DropService = 8,
+    DropFragment = 9,
+    DropRatelimit = 10,
+    TxSynChallenge = 11,
+    SynVerified = 12,
+    DropUnverified = 13,
 }
 
 impl Verdict {
@@ -33,15 +58,36 @@ impl Verdict {
         Verdict::DropMalformed,
         Verdict::PassNonIp,
         Verdict::Fragment,
+        Verdict::PassLocal,
+        Verdict::DropBogon,
+        Verdict::PassAllow,
+        Verdict::DropBlock,
+        Verdict::DropService,
+        Verdict::DropFragment,
+        Verdict::DropRatelimit,
+        Verdict::TxSynChallenge,
+        Verdict::SynVerified,
+        Verdict::DropUnverified,
     ];
 
     /// Stable name used in CLI output, JSON and (later) NATS messages.
+    /// Equals the C name without the `XS_V_` prefix, lower-cased.
     pub fn name(self) -> &'static str {
         match self {
             Verdict::Pass => "pass",
             Verdict::DropMalformed => "drop_malformed",
             Verdict::PassNonIp => "pass_non_ip",
             Verdict::Fragment => "fragment",
+            Verdict::PassLocal => "pass_local",
+            Verdict::DropBogon => "drop_bogon",
+            Verdict::PassAllow => "pass_allow",
+            Verdict::DropBlock => "drop_block",
+            Verdict::DropService => "drop_service",
+            Verdict::DropFragment => "drop_fragment",
+            Verdict::DropRatelimit => "drop_ratelimit",
+            Verdict::TxSynChallenge => "tx_syn_challenge",
+            Verdict::SynVerified => "syn_verified",
+            Verdict::DropUnverified => "drop_unverified",
         }
     }
 
@@ -49,9 +95,19 @@ impl Verdict {
         Self::ALL.into_iter().find(|v| v.name() == name)
     }
 
-    /// True if the verdict drops the packet when the tenant is mitigating.
+    /// True if the packet is dropped when mitigating (`xs_verdict_drops`).
     pub fn is_drop(self) -> bool {
-        matches!(self, Verdict::DropMalformed)
+        matches!(
+            self,
+            Verdict::DropMalformed
+                | Verdict::DropBogon
+                | Verdict::DropBlock
+                | Verdict::DropService
+                | Verdict::DropFragment
+                | Verdict::DropRatelimit
+                | Verdict::SynVerified
+                | Verdict::DropUnverified
+        )
     }
 }
 
@@ -62,12 +118,146 @@ impl TryFrom<u32> for Verdict {
     }
 }
 
+/// Rule reasons (`enum xs_reason`). Append-only.
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Reason {
+    None = 0,
+    Manual = 1,
+}
+
+impl Reason {
+    pub const ALL: [Reason; 2] = [Reason::None, Reason::Manual];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Reason::None => "none",
+            Reason::Manual => "manual",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Reason> {
+        Self::ALL.into_iter().find(|r| r.name() == name)
+    }
+}
+
+/// Name of a raw reason code; unknown codes stay visible.
+pub fn reason_name(code: u32) -> String {
+    Reason::ALL
+        .into_iter()
+        .find(|r| *r as u32 == code)
+        .map(|r| r.name().to_string())
+        .unwrap_or_else(|| format!("unknown_{code}"))
+}
+
 /// `struct xs_cfg`
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct XsCfg {
     pub flags: u32,
+    /// Network byte order; all-zero = unset.
+    pub pop_ip4: [u8; 4],
+    /// All-zero = unset.
+    pub pop_ip6: [u8; 16],
+    /// SipHash key for SYN cookies; all-zero = SYN cookies disabled.
+    pub cookie_key: [u64; 2],
+    /// 0 = XS_VERIFY_TTL_DEFAULT_S.
+    pub verify_ttl_s: u32,
     pub _pad: u32,
+}
+
+impl XsCfg {
+    pub fn pop_ip4(&self) -> Option<Ipv4Addr> {
+        (self.pop_ip4 != [0; 4]).then(|| Ipv4Addr::from(self.pop_ip4))
+    }
+    pub fn pop_ip6(&self) -> Option<Ipv6Addr> {
+        (self.pop_ip6 != [0; 16]).then(|| Ipv6Addr::from(self.pop_ip6))
+    }
+    pub fn verify_ttl_s(&self) -> u32 {
+        if self.verify_ttl_s == 0 {
+            XS_VERIFY_TTL_DEFAULT_S
+        } else {
+            self.verify_ttl_s
+        }
+    }
+}
+
+/// `struct xs_policy`
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct XsPolicy {
+    pub flags: u32,
+    pub pps_per_src: u32,
+    pub burst: u32,
+    pub _pad: u32,
+}
+
+/// `struct xs_src_key` (LPM key; prefixlen = 32 + source prefix length)
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct XsSrcKey {
+    pub prefixlen: u32,
+    pub tenant: u32,
+    pub src: [u8; 4],
+}
+
+/// `struct xs_src6_key`
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct XsSrc6Key {
+    pub prefixlen: u32,
+    pub tenant: u32,
+    pub src: [u8; 16],
+}
+
+/// `struct xs_rule`
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct XsRule {
+    pub expires_ns: u64,
+    pub reason: u32,
+    pub _pad: u32,
+}
+
+/// `struct xs_svc_key`
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct XsSvcKey {
+    pub asset: u32,
+    pub proto: u8,
+    pub _pad: u8,
+    /// Network byte order; 0 = every port / whole protocol.
+    pub port: [u8; 2],
+}
+
+impl XsSvcKey {
+    pub fn new(asset: u32, proto: u8, port: u16) -> Self {
+        XsSvcKey {
+            asset,
+            proto,
+            _pad: 0,
+            port: port.to_be_bytes(),
+        }
+    }
+    pub fn port(&self) -> u16 {
+        u16::from_be_bytes(self.port)
+    }
+}
+
+/// `struct xs_addr_key` (xs_rl, xs_verified)
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct XsAddrKey {
+    pub tenant: u32,
+    pub addr: [u8; 16],
+}
+
+/// `struct xs_rl`
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct XsRl {
+    pub tokens: u64,
+    pub last_ns: u64,
 }
 
 /// `struct xs_stats_key`
@@ -86,12 +276,16 @@ pub struct XsStatsVal {
     pub bytes: u64,
 }
 
-const _: () = assert!(size_of::<XsCfg>() == 8);
-const _: () = assert!(align_of::<XsCfg>() == 4);
-const _: () = assert!(size_of::<XsStatsKey>() == 8);
-const _: () = assert!(align_of::<XsStatsKey>() == 4);
-const _: () = assert!(size_of::<XsStatsVal>() == 16);
-const _: () = assert!(align_of::<XsStatsVal>() == 8);
+const _: () = assert!(size_of::<XsCfg>() == 48 && align_of::<XsCfg>() == 8);
+const _: () = assert!(size_of::<XsPolicy>() == 16 && align_of::<XsPolicy>() == 4);
+const _: () = assert!(size_of::<XsSrcKey>() == 12 && align_of::<XsSrcKey>() == 4);
+const _: () = assert!(size_of::<XsSrc6Key>() == 24 && align_of::<XsSrc6Key>() == 4);
+const _: () = assert!(size_of::<XsRule>() == 16 && align_of::<XsRule>() == 8);
+const _: () = assert!(size_of::<XsSvcKey>() == 8 && align_of::<XsSvcKey>() == 4);
+const _: () = assert!(size_of::<XsAddrKey>() == 20 && align_of::<XsAddrKey>() == 4);
+const _: () = assert!(size_of::<XsRl>() == 16 && align_of::<XsRl>() == 8);
+const _: () = assert!(size_of::<XsStatsKey>() == 8 && align_of::<XsStatsKey>() == 4);
+const _: () = assert!(size_of::<XsStatsVal>() == 16 && align_of::<XsStatsVal>() == 8);
 
 /// Conversion to and from the raw bytes stored in BPF maps (native endian,
 /// C layout). Implemented by hand so the crate needs no `unsafe`.
@@ -102,52 +296,150 @@ pub trait MapBytes: Sized {
     fn from_bytes(b: &[u8]) -> Option<Self>;
 }
 
-fn u32_at(b: &[u8], off: usize) -> u32 {
-    u32::from_ne_bytes(b[off..off + 4].try_into().expect("slice of 4"))
-}
-
-fn u64_at(b: &[u8], off: usize) -> u64 {
-    u64::from_ne_bytes(b[off..off + 8].try_into().expect("slice of 8"))
-}
-
-impl MapBytes for XsCfg {
-    const SIZE: usize = size_of::<Self>();
-    fn to_bytes(&self) -> Vec<u8> {
-        [self.flags.to_ne_bytes(), self._pad.to_ne_bytes()].concat()
+/// Sequential writer/reader for the field-by-field conversions.
+struct W(Vec<u8>);
+impl W {
+    fn u8s(mut self, b: &[u8]) -> Self {
+        self.0.extend_from_slice(b);
+        self
     }
-    fn from_bytes(b: &[u8]) -> Option<Self> {
-        (b.len() == Self::SIZE).then(|| XsCfg {
-            flags: u32_at(b, 0),
-            _pad: u32_at(b, 4),
-        })
+    fn u32(self, v: u32) -> Self {
+        self.u8s(&v.to_ne_bytes())
+    }
+    fn u64(self, v: u64) -> Self {
+        self.u8s(&v.to_ne_bytes())
     }
 }
 
-impl MapBytes for XsStatsKey {
-    const SIZE: usize = size_of::<Self>();
-    fn to_bytes(&self) -> Vec<u8> {
-        [self.tenant.to_ne_bytes(), self.verdict.to_ne_bytes()].concat()
+struct R<'a>(&'a [u8]);
+impl R<'_> {
+    fn arr<const N: usize>(&mut self) -> [u8; N] {
+        let (head, rest) = self.0.split_at(N);
+        self.0 = rest;
+        head.try_into().expect("split_at(N)")
     }
-    fn from_bytes(b: &[u8]) -> Option<Self> {
-        (b.len() == Self::SIZE).then(|| XsStatsKey {
-            tenant: u32_at(b, 0),
-            verdict: u32_at(b, 4),
-        })
+    fn u32(&mut self) -> u32 {
+        u32::from_ne_bytes(self.arr())
+    }
+    fn u64(&mut self) -> u64 {
+        u64::from_ne_bytes(self.arr())
     }
 }
 
-impl MapBytes for XsStatsVal {
-    const SIZE: usize = size_of::<Self>();
-    fn to_bytes(&self) -> Vec<u8> {
-        [self.pkts.to_ne_bytes(), self.bytes.to_ne_bytes()].concat()
-    }
-    fn from_bytes(b: &[u8]) -> Option<Self> {
-        (b.len() == Self::SIZE).then(|| XsStatsVal {
-            pkts: u64_at(b, 0),
-            bytes: u64_at(b, 8),
-        })
-    }
+macro_rules! map_bytes {
+    ($t:ty, |$s:ident, $w:ident| $write:expr, |$r:ident| $read:expr) => {
+        impl MapBytes for $t {
+            const SIZE: usize = size_of::<$t>();
+            fn to_bytes(&self) -> Vec<u8> {
+                let $s = self;
+                let $w = W(Vec::with_capacity(Self::SIZE));
+                let out: W = $write;
+                debug_assert_eq!(out.0.len(), Self::SIZE);
+                out.0
+            }
+            fn from_bytes(b: &[u8]) -> Option<Self> {
+                if b.len() != Self::SIZE {
+                    return None;
+                }
+                let mut $r = R(b);
+                Some($read)
+            }
+        }
+    };
 }
+
+map_bytes!(
+    XsCfg,
+    |s, w| w
+        .u32(s.flags)
+        .u8s(&s.pop_ip4)
+        .u8s(&s.pop_ip6)
+        .u64(s.cookie_key[0])
+        .u64(s.cookie_key[1])
+        .u32(s.verify_ttl_s)
+        .u32(s._pad),
+    |r| XsCfg {
+        flags: r.u32(),
+        pop_ip4: r.arr(),
+        pop_ip6: r.arr(),
+        cookie_key: [r.u64(), r.u64()],
+        verify_ttl_s: r.u32(),
+        _pad: r.u32(),
+    }
+);
+map_bytes!(
+    XsPolicy,
+    |s, w| w.u32(s.flags).u32(s.pps_per_src).u32(s.burst).u32(s._pad),
+    |r| XsPolicy {
+        flags: r.u32(),
+        pps_per_src: r.u32(),
+        burst: r.u32(),
+        _pad: r.u32()
+    }
+);
+map_bytes!(
+    XsSrcKey,
+    |s, w| w.u32(s.prefixlen).u32(s.tenant).u8s(&s.src),
+    |r| XsSrcKey {
+        prefixlen: r.u32(),
+        tenant: r.u32(),
+        src: r.arr()
+    }
+);
+map_bytes!(
+    XsSrc6Key,
+    |s, w| w.u32(s.prefixlen).u32(s.tenant).u8s(&s.src),
+    |r| XsSrc6Key {
+        prefixlen: r.u32(),
+        tenant: r.u32(),
+        src: r.arr()
+    }
+);
+map_bytes!(
+    XsRule,
+    |s, w| w.u64(s.expires_ns).u32(s.reason).u32(s._pad),
+    |r| XsRule {
+        expires_ns: r.u64(),
+        reason: r.u32(),
+        _pad: r.u32()
+    }
+);
+map_bytes!(
+    XsSvcKey,
+    |s, w| w.u32(s.asset).u8s(&[s.proto, s._pad]).u8s(&s.port),
+    |r| {
+        let asset = r.u32();
+        let [proto, _pad] = r.arr();
+        XsSvcKey {
+            asset,
+            proto,
+            _pad,
+            port: r.arr(),
+        }
+    }
+);
+map_bytes!(XsAddrKey, |s, w| w.u32(s.tenant).u8s(&s.addr), |r| {
+    XsAddrKey {
+        tenant: r.u32(),
+        addr: r.arr(),
+    }
+});
+map_bytes!(XsRl, |s, w| w.u64(s.tokens).u64(s.last_ns), |r| XsRl {
+    tokens: r.u64(),
+    last_ns: r.u64()
+});
+map_bytes!(XsStatsKey, |s, w| w.u32(s.tenant).u32(s.verdict), |r| {
+    XsStatsKey {
+        tenant: r.u32(),
+        verdict: r.u32(),
+    }
+});
+map_bytes!(XsStatsVal, |s, w| w.u64(s.pkts).u64(s.bytes), |r| {
+    XsStatsVal {
+        pkts: r.u64(),
+        bytes: r.u64(),
+    }
+});
 
 #[cfg(test)]
 mod tests {
@@ -190,19 +482,17 @@ mod tests {
         out
     }
 
-    /// Parses enum members of the form `NAME = <int>,`.
-    fn c_enum_values() -> HashMap<String, u64> {
+    /// Parses enum members of the form `<PREFIX>NAME = <int>,`.
+    fn c_enum_values(prefix: &str) -> HashMap<String, u64> {
         ABI_H
             .lines()
             .filter_map(|l| {
-                let l = l.trim();
-                let (name, rest) = l.split_once('=')?;
+                let (name, rest) = l.trim().split_once('=')?;
                 let name = name.trim();
-                if !name.starts_with("XS_V_") {
+                if !name.starts_with(prefix) {
                     return None;
                 }
-                let v = rest.trim().trim_end_matches(|c: char| !c.is_ascii_digit());
-                let v = v.split(|c: char| !c.is_ascii_digit()).next()?;
+                let v = rest.trim().split(|c: char| !c.is_ascii_digit()).next()?;
                 Some((name.to_string(), v.parse().ok()?))
             })
             .collect()
@@ -226,22 +516,31 @@ mod tests {
     #[test]
     fn defines_match_c() {
         let d = c_defines();
-        let want: &[(&str, u64)] = &[
-            ("XS_ABI_VERSION", XS_ABI_VERSION as u64),
-            ("XS_MAX_VLAN_TAGS", XS_MAX_VLAN_TAGS as u64),
-            ("XS_MAX_IPV6_EXT_HDRS", XS_MAX_IPV6_EXT_HDRS as u64),
-            ("XS_STATS_MAX_ENTRIES", XS_STATS_MAX_ENTRIES as u64),
-            ("XS_TENANT_GLOBAL", XS_TENANT_GLOBAL as u64),
-            ("XS_CFG_F_OBSERVE", XS_CFG_F_OBSERVE as u64),
+        let want: &[(&str, u32)] = &[
+            ("XS_ABI_VERSION", XS_ABI_VERSION),
+            ("XS_MAX_VLAN_TAGS", XS_MAX_VLAN_TAGS),
+            ("XS_MAX_IPV6_EXT_HDRS", XS_MAX_IPV6_EXT_HDRS),
+            ("XS_STATS_MAX_ENTRIES", XS_STATS_MAX_ENTRIES),
+            ("XS_RULES_MAX_ENTRIES", XS_RULES_MAX_ENTRIES),
+            ("XS_SERVICES_MAX_ENTRIES", XS_SERVICES_MAX_ENTRIES),
+            ("XS_RL_MAX_ENTRIES", XS_RL_MAX_ENTRIES),
+            ("XS_VERIFIED_MAX_ENTRIES", XS_VERIFIED_MAX_ENTRIES),
+            ("XS_TENANT_GLOBAL", XS_TENANT_GLOBAL),
+            ("XS_RL_V6_PREFIX", XS_RL_V6_PREFIX),
+            ("XS_VERIFY_TTL_DEFAULT_S", XS_VERIFY_TTL_DEFAULT_S),
+            ("XS_CFG_F_OBSERVE", XS_CFG_F_OBSERVE),
+            ("XS_P_MITIGATE", XS_P_MITIGATE),
+            ("XS_P_SYNCOOKIE", XS_P_SYNCOOKIE),
+            ("XS_P_SERVICES", XS_P_SERVICES),
+            ("XS_P_ALLOW_FRAG", XS_P_ALLOW_FRAG),
         ];
         for (name, v) in want {
             assert_eq!(
                 d.get(*name),
-                Some(v),
+                Some(&(*v as u64)),
                 "{name} differs between abi.h and abi.rs"
             );
         }
-        // Every XS_ define in C must be mirrored (header guard excluded).
         for name in d.keys() {
             assert!(
                 want.iter().any(|(n, _)| n == name),
@@ -252,37 +551,57 @@ mod tests {
 
     #[test]
     fn verdicts_match_c() {
-        let e = c_enum_values();
-        let c_name = |v: Verdict| format!("XS_V_{}", v.name().to_uppercase());
+        let e = c_enum_values("XS_V_");
         for v in Verdict::ALL {
-            assert_eq!(e.get(&c_name(v)), Some(&(v as u64)), "{:?}", v);
+            let c = format!("XS_V_{}", v.name().to_uppercase());
+            assert_eq!(e.get(&c), Some(&(v as u64)), "{v:?}");
         }
         assert_eq!(e.get("XS_V__COUNT"), Some(&(XS_V_COUNT as u64)));
         assert_eq!(e.len(), Verdict::ALL.len() + 1, "C has verdicts Rust lacks");
     }
 
     #[test]
+    fn reasons_match_c() {
+        let e = c_enum_values("XS_R_");
+        for r in Reason::ALL {
+            let c = format!("XS_R_{}", r.name().to_uppercase());
+            assert_eq!(e.get(&c), Some(&(r as u64)), "{r:?}");
+        }
+        assert_eq!(e.len(), Reason::ALL.len(), "C has reasons Rust lacks");
+    }
+
+    #[test]
     fn struct_layouts_match_c() {
         let sizes = c_layout("sizeof");
         let aligns = c_layout("_Alignof");
-        let rust: &[(&str, usize, usize)] = &[
-            ("xs_cfg", size_of::<XsCfg>(), align_of::<XsCfg>()),
-            (
-                "xs_stats_key",
-                size_of::<XsStatsKey>(),
-                align_of::<XsStatsKey>(),
-            ),
-            (
-                "xs_stats_val",
-                size_of::<XsStatsVal>(),
-                align_of::<XsStatsVal>(),
-            ),
+        macro_rules! l {
+            ($n:literal, $t:ty) => {
+                (
+                    $n,
+                    size_of::<$t>(),
+                    align_of::<$t>(),
+                    <$t as MapBytes>::SIZE,
+                )
+            };
+        }
+        let rust = [
+            l!("xs_cfg", XsCfg),
+            l!("xs_policy", XsPolicy),
+            l!("xs_src_key", XsSrcKey),
+            l!("xs_src6_key", XsSrc6Key),
+            l!("xs_rule", XsRule),
+            l!("xs_svc_key", XsSvcKey),
+            l!("xs_addr_key", XsAddrKey),
+            l!("xs_rl", XsRl),
+            l!("xs_stats_key", XsStatsKey),
+            l!("xs_stats_val", XsStatsVal),
         ];
         assert_eq!(sizes.len(), rust.len(), "struct count differs");
         assert_eq!(aligns.len(), rust.len(), "struct count differs");
-        for (name, size, align) in rust {
-            assert_eq!(sizes.get(*name), Some(size), "sizeof {name}");
-            assert_eq!(aligns.get(*name), Some(align), "alignof {name}");
+        for (name, size, align, bytes) in rust {
+            assert_eq!(sizes.get(name), Some(&size), "sizeof {name}");
+            assert_eq!(aligns.get(name), Some(&align), "alignof {name}");
+            assert_eq!(bytes, size, "MapBytes::SIZE {name}");
         }
     }
 
@@ -294,25 +613,80 @@ mod tests {
         }
         assert_eq!(Verdict::try_from(XS_V_COUNT), Err(XS_V_COUNT));
         assert_eq!(Verdict::from_name("nope"), None);
+        assert!(Verdict::DropBlock.is_drop());
+        assert!(!Verdict::TxSynChallenge.is_drop());
+        assert_eq!(reason_name(1), "manual");
+        assert_eq!(reason_name(77), "unknown_77");
+    }
+
+    fn round_trip<T: MapBytes + PartialEq + std::fmt::Debug>(v: T) {
+        let b = v.to_bytes();
+        assert_eq!(b.len(), T::SIZE);
+        assert_eq!(T::from_bytes(&b), Some(v));
+        assert_eq!(T::from_bytes(&b[1..]), None);
     }
 
     #[test]
     fn map_bytes_round_trip() {
-        let k = XsStatsKey {
+        round_trip(XsCfg {
+            flags: XS_CFG_F_OBSERVE,
+            pop_ip4: [10, 10, 1, 1],
+            pop_ip6: [0x20, 1, 0xd, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            cookie_key: [u64::MAX, 7],
+            verify_ttl_s: 300,
+            _pad: 0,
+        });
+        round_trip(XsPolicy {
+            flags: 5,
+            pps_per_src: 1000,
+            burst: 2000,
+            _pad: 0,
+        });
+        round_trip(XsSrcKey {
+            prefixlen: 56,
+            tenant: 42,
+            src: [203, 0, 113, 0],
+        });
+        round_trip(XsSrc6Key {
+            prefixlen: 80,
+            tenant: 1,
+            src: [9; 16],
+        });
+        round_trip(XsRule {
+            expires_ns: 1 << 50,
+            reason: 1,
+            _pad: 0,
+        });
+        round_trip(XsSvcKey::new(0, 6, 443));
+        round_trip(XsAddrKey {
+            tenant: 3,
+            addr: [1; 16],
+        });
+        round_trip(XsRl {
+            tokens: 5,
+            last_ns: 6,
+        });
+        round_trip(XsStatsKey {
             tenant: 42,
             verdict: 3,
-        };
-        assert_eq!(XsStatsKey::from_bytes(&k.to_bytes()), Some(k));
-        let v = XsStatsVal {
+        });
+        round_trip(XsStatsVal {
             pkts: 1 << 40,
             bytes: u64::MAX,
-        };
-        assert_eq!(XsStatsVal::from_bytes(&v.to_bytes()), Some(v));
+        });
+    }
+
+    #[test]
+    fn network_order_fields() {
+        let k = XsSvcKey::new(0, 6, 443);
+        assert_eq!(k.to_bytes()[6..8], [0x01, 0xbb]);
+        assert_eq!(k.port(), 443);
         let c = XsCfg {
-            flags: XS_CFG_F_OBSERVE,
-            _pad: 0,
+            pop_ip4: [10, 10, 1, 1],
+            ..Default::default()
         };
-        assert_eq!(XsCfg::from_bytes(&c.to_bytes()), Some(c));
-        assert_eq!(XsStatsVal::from_bytes(&[0; 15]), None);
+        assert_eq!(c.pop_ip4(), Some(Ipv4Addr::new(10, 10, 1, 1)));
+        assert_eq!(c.pop_ip6(), None);
+        assert_eq!(c.verify_ttl_s(), XS_VERIFY_TTL_DEFAULT_S);
     }
 }
