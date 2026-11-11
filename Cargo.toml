@@ -27,6 +27,9 @@ reqwest = { version = "0.13", default-features = false, features = ["json"] }
 sha2 = "0.11"
 sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls-ring-webpki", "migrate", "macros", "derive", "json"] }
 totp-rs = { version = "6", features = ["otpauth"] }
+webauthn-rs = { version = "0.6", features = ["danger-allow-state-serialisation"] }
+tokio-tungstenite = "0.29"
+url = "2"
 utoipa = "6"
 async-nats = "0.52"
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }

@@ -707,3 +707,201 @@ async fn admin_and_public_status() {
         "public status hides addresses"
     );
 }
+
+/// Phase 6: the live WebSocket only ever carries the caller's tenant, and
+/// refuses other origins and other tenants.
+#[tokio::test]
+#[ignore = "needs PostgreSQL: run with `make test-api`"]
+async fn live_view_is_per_tenant() {
+    use futures::StreamExt;
+    use sentinel_common::msg::{StatsMsg, StatsRow, SCHEMA_V};
+    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message};
+
+    let lab = Lab::new().await;
+    let (a, ta) = lab.customer("live-a@a.test").await;
+    let (_b, tb) = lab.customer("live-b@b.test").await;
+    let row = |tenant: i64, verdict: &str, pps: f64| StatsRow {
+        tenant: tenant as u32,
+        verdict: verdict.into(),
+        pkts: 1,
+        bytes: 1,
+        pps,
+        bps: pps * 8000.0,
+    };
+    lab.live.update(StatsMsg {
+        kind: "stats".into(),
+        v: SCHEMA_V,
+        pop: "lab1".into(),
+        ts: 0,
+        interval_ms: 1000,
+        sample_rate: 1,
+        events_lost: 0,
+        entries: vec![
+            row(ta, "pass", 12.0),
+            row(ta, "drop_block", 3.0),
+            row(tb, "pass", 777.0),
+        ],
+    });
+
+    let ws_url = |tid: i64| format!("{}/tenants/{tid}/live", lab.base.replacen("http", "ws", 1));
+    let connect = |tid: i64, origin: &'static str, cookie: Option<String>| {
+        let mut req = ws_url(tid).into_client_request().unwrap();
+        req.headers_mut().insert("origin", origin.parse().unwrap());
+        if let Some(c) = cookie {
+            req.headers_mut()
+                .insert("cookie", format!("xs_session={c}").parse().unwrap());
+        }
+        tokio_tungstenite::connect_async(req)
+    };
+
+    let (mut ws, _) = connect(ta, "https://portal.test", a.cookie.clone())
+        .await
+        .expect("own tenant");
+    let frame = loop {
+        match ws.next().await.unwrap().unwrap() {
+            Message::Text(t) => break serde_json::from_str::<serde_json::Value>(&t).unwrap(),
+            _ => continue,
+        }
+    };
+    assert_eq!(frame["total"]["in_pps"], 15.0, "{frame}");
+    assert_eq!(frame["total"]["filtered_pps"], 3.0);
+    assert_eq!(frame["pops"][0]["pop"], "lab1");
+    assert!(
+        !frame.to_string().contains("777"),
+        "other tenant leaked: {frame}"
+    );
+
+    let status = |r: Result<_, tokio_tungstenite::tungstenite::Error>| match r {
+        Err(tokio_tungstenite::tungstenite::Error::Http(resp)) => resp.status().as_u16(),
+        Err(e) => panic!("{e}"),
+        Ok(_) => 101,
+    };
+    assert_eq!(
+        status(connect(tb, "https://portal.test", a.cookie.clone()).await),
+        404
+    );
+    assert_eq!(
+        status(connect(ta, "https://evil.test", a.cookie.clone()).await),
+        403
+    );
+    assert_eq!(status(connect(ta, "https://portal.test", None).await), 401);
+}
+
+/// Phase 6: passkey endpoints, the tunnel test and the TOTP/passkey split.
+#[tokio::test]
+#[ignore = "needs PostgreSQL: run with `make test-api`"]
+async fn passkeys_and_tunnel_test() {
+    let lab = Lab::new().await;
+    let (mut a, ta) = lab.customer("pk-a@a.test").await;
+    let (mut b, _) = lab.customer("pk-b@b.test").await;
+
+    // Registration options name the portal as relying party and carry a
+    // random user handle, not the e-mail or the database id.
+    let (s, opts) = a
+        .call(Method::POST, "/auth/webauthn/register/start", None)
+        .await;
+    assert_eq!(s, StatusCode::OK, "{opts}");
+    assert_eq!(opts["publicKey"]["rp"]["id"], "portal.test");
+    let challenge = opts["publicKey"]["challenge"].as_str().unwrap().to_string();
+    assert!(challenge.len() >= 32);
+    let uid = opts["publicKey"]["user"]["id"].as_str().unwrap();
+    assert!(!uid.contains("pk-a") && uid.len() > 8);
+    // A new start replaces the challenge; the state is stored encrypted.
+    let (_, opts2) = a
+        .call(Method::POST, "/auth/webauthn/register/start", None)
+        .await;
+    assert_ne!(opts2["publicKey"]["challenge"].as_str().unwrap(), challenge);
+    let stored: Vec<u8> = sqlx::query_scalar("SELECT state FROM webauthn_challenges")
+        .fetch_one(&lab.su)
+        .await
+        .unwrap();
+    assert!(!String::from_utf8_lossy(&stored).contains(&challenge));
+
+    // A forged credential is rejected and consumes the challenge.
+    let fake = json!({"name": "x", "credential": {
+        "id": "AAAA", "rawId": "AAAA", "type": "public-key",
+        "response": {"attestationObject": "AAAA", "clientDataJSON": "AAAA"}}});
+    let (s, b2) = a
+        .call(
+            Method::POST,
+            "/auth/webauthn/register/finish",
+            Some(fake.clone()),
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{b2}");
+    let (s, b2) = a
+        .call(Method::POST, "/auth/webauthn/register/finish", Some(fake))
+        .await;
+    assert_eq!(
+        (s, b2["error"].as_str()),
+        (StatusCode::BAD_REQUEST, Some("no_challenge"))
+    );
+
+    // No passkeys yet: nothing to log in with; TOTP verify without TOTP fails.
+    let (s, e) = a
+        .call(Method::POST, "/auth/webauthn/login/start", None)
+        .await;
+    assert_eq!(
+        (s, e["error"].as_str()),
+        (StatusCode::BAD_REQUEST, Some("no_passkeys"))
+    );
+    let (s, e) = a
+        .call(
+            Method::POST,
+            "/auth/2fa/verify",
+            Some(json!({"code": "000000"})),
+        )
+        .await;
+    assert_eq!(
+        (s, e["error"].as_str()),
+        (StatusCode::BAD_REQUEST, Some("no_totp"))
+    );
+    let (s, list) = a
+        .call(Method::GET, "/auth/webauthn/credentials", None)
+        .await;
+    assert_eq!((s, list), (StatusCode::OK, json!([])));
+    let (s, _) = a
+        .call(Method::DELETE, "/auth/webauthn/credentials/1", None)
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+
+    // Tunnel test: without NATS the API says so; other tenants get 404.
+    let (_, asset) = a
+        .call(
+            Method::POST,
+            &format!("/tenants/{ta}/assets"),
+            Some(json!({"origin_ip": "192.0.2.10", "services": []})),
+        )
+        .await;
+    let aid = asset["id"].as_i64().unwrap();
+    let path = format!("/tenants/{ta}/assets/{aid}/tunnel-test");
+    let (s, e) = b.call(Method::POST, &path, None).await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "{e}");
+    let (s, e) = a.call(Method::POST, &path, None).await;
+    assert_eq!(
+        (s, e["error"].as_str()),
+        (StatusCode::SERVICE_UNAVAILABLE, Some("unavailable"))
+    );
+    let (s, _) = a.call(Method::POST, &path, None).await;
+    assert_eq!(
+        s,
+        StatusCode::TOO_MANY_REQUESTS,
+        "one test per asset every 5 s"
+    );
+    let resp = a.raw(Method::POST, &path, None, false).await;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN, "CSRF still applies");
+
+    // Passkey challenges are bound to the session: logging out removes them.
+    let _ = a
+        .call(Method::POST, "/auth/webauthn/register/start", None)
+        .await;
+    let (s, _) = a.call(Method::POST, "/auth/logout", None).await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let left: i64 = sqlx::query_scalar("SELECT count(*) FROM webauthn_challenges")
+        .fetch_one(&lab.su)
+        .await
+        .unwrap();
+    assert_eq!(left, 0);
+    let _ = PASSWORD;
+    let _ = totp;
+}

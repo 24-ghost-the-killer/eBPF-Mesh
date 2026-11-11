@@ -16,7 +16,9 @@ use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use utoipa::{IntoParams, ToSchema};
 
-use sentinel_common::msg::{FragDoc, ModeDoc, ServiceDoc, ServicesDoc, SCHEMA_V};
+use sentinel_common::msg::{
+    subject_probe, FragDoc, ModeDoc, ProbeReq, ProbeResp, ServiceDoc, ServicesDoc, SCHEMA_V,
+};
 use sentinel_common::prefix::Prefix;
 use sentinel_common::tunnel::{ReturnMode, TunnelScript};
 
@@ -42,6 +44,16 @@ fn wake(state: &AppState) {
 
 // ---- assets -------------------------------------------------------------------------
 
+/// An allowed service (OpenAPI shape of `ServiceDoc`).
+#[derive(ToSchema)]
+#[allow(dead_code)]
+pub struct Service {
+    /// "tcp", "udp", "icmp", "icmpv6" or a protocol number.
+    pub proto: String,
+    /// TCP/UDP destination port; omit for every port of the protocol.
+    pub port: Option<u16>,
+}
+
 #[derive(Serialize, Deserialize, ToSchema, Clone, Debug, PartialEq)]
 pub struct PolicyView {
     /// observe (count only) or mitigate (drop). Mitigate needs 2FA.
@@ -53,7 +65,7 @@ pub struct PolicyView {
     pub fragments: FragDoc,
     pub pps_per_src: u32,
     pub burst: u32,
-    #[schema(value_type = Vec<Object>, example = json!([{"proto": "tcp", "port": 443}]))]
+    #[schema(value_type = Vec<Service>, example = json!([{"proto": "tcp", "port": 443}]))]
     pub services: Vec<ServiceDoc>,
 }
 
@@ -157,7 +169,7 @@ pub struct CreateAsset {
     pub origin_ip: Ipv4Addr,
     /// Ports to allow (only enforced once enforce_services is on).
     #[serde(default)]
-    #[schema(value_type = Vec<Object>)]
+    #[schema(value_type = Vec<Service>)]
     pub services: Vec<ServiceDoc>,
 }
 
@@ -334,11 +346,14 @@ pub async fn put_policy(
 }
 
 #[derive(Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct TunnelQuery {
     /// tunnel (default) or dsr
     #[serde(rename = "return")]
+    #[param(required = false)]
     pub return_mode: Option<String>,
     /// Use an existing tunnel device (e.g. tunl0) instead of creating one.
+    #[param(required = false)]
     pub device: Option<String>,
 }
 
@@ -440,6 +455,126 @@ pub async fn asset_status(
         pops_total: pops.len() as i64,
         pops_applied: pops.iter().filter(|p| p.ok).count() as i64,
         pops,
+    }))
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct TunnelTestPop {
+    pub pop: String,
+    /// At least one probe came back through the tunnel.
+    pub ok: bool,
+    pub sent: u8,
+    pub received: u8,
+    pub rtt_ms: Option<f64>,
+    pub error: Option<String>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct TunnelTest {
+    /// Every live PoP reached the protected IP through the tunnel (and at
+    /// least one PoP is live).
+    pub ok: bool,
+    pub pops: Vec<TunnelTestPop>,
+}
+
+/// Probe timeout per PoP (the agent waits up to 0.8 s per echo).
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(6);
+
+/// Tunnel test (ADR 0020): every live PoP pings the protected IP through
+/// the tunnel; a reply proves delivery and the return tunnel.
+#[utoipa::path(post, path = "/api/v1/tenants/{tid}/assets/{aid}/tunnel-test", tag = "assets",
+    params(("tid" = i64, Path), ("aid" = i64, Path)),
+    responses((status = 200, body = TunnelTest), (status = 404, body = ErrorBody),
+        (status = 429, body = ErrorBody), (status = 503, body = ErrorBody)),
+    security(("session" = []), ("api_key" = [])))]
+pub async fn tunnel_test(
+    State(state): State<AppState>,
+    c: Caller,
+    Path((tid, aid)): Path<(i64, i64)>,
+) -> ApiResult<Json<TunnelTest>> {
+    let (_, mut tx) = enter(&state, &c, tid, Role::Admin).await?;
+    let a = load_asset(&mut tx, tid, aid).await?;
+    // At most one test per asset every 5 seconds.
+    let recent: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log WHERE tenant_id = $1 AND action = 'asset.tunnel_test' \
+         AND (payload->>'asset')::bigint = $2 AND ts > now() - interval '5 seconds'",
+    )
+    .bind(tid)
+    .bind(aid)
+    .fetch_one(&mut *tx)
+    .await?;
+    if recent > 0 {
+        return Err(ApiError::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "rate_limited",
+            "wait a few seconds between tunnel tests",
+        ));
+    }
+    db::audit(
+        &mut tx,
+        c.user_id,
+        Some(tid),
+        "asset.tunnel_test",
+        serde_json::json!({"asset": aid}),
+        c.ip,
+    )
+    .await?;
+    tx.commit().await?;
+    let nats = state.nats.get().cloned().ok_or_else(|| {
+        ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "the PoPs cannot be reached right now",
+        )
+    })?;
+    let asset = u32::try_from(a.id).map_err(|_| ApiError::internal())?;
+    let pops: Vec<String> = sqlx::query_scalar(
+        "SELECT id FROM pops WHERE last_seen > now() - interval '30 seconds' ORDER BY id",
+    )
+    .fetch_all(&state.pool)
+    .await?;
+    let body = serde_json::to_vec(&ProbeReq {
+        v: SCHEMA_V,
+        asset,
+        count: 3,
+    })
+    .map_err(anyhow::Error::from)?;
+    let results = futures::future::join_all(pops.iter().map(|pop| {
+        let (nats, body) = (nats.clone(), body.clone());
+        async move {
+            let r =
+                tokio::time::timeout(PROBE_TIMEOUT, nats.request(subject_probe(pop), body.into()))
+                    .await;
+            let resp = match r {
+                Ok(Ok(m)) => serde_json::from_slice::<ProbeResp>(&m.payload)
+                    .map_err(|e| format!("bad reply: {e}")),
+                Ok(Err(e)) => Err(format!("no answer from the PoP: {e}")),
+                Err(_) => Err("the PoP did not answer in time".to_string()),
+            };
+            match resp {
+                Ok(p) => TunnelTestPop {
+                    pop: pop.clone(),
+                    ok: p.received > 0,
+                    sent: p.sent,
+                    received: p.received,
+                    rtt_ms: p.rtt_ms,
+                    error: p.error,
+                },
+                Err(e) => TunnelTestPop {
+                    pop: pop.clone(),
+                    ok: false,
+                    sent: 0,
+                    received: 0,
+                    rtt_ms: None,
+                    error: Some(e),
+                },
+            }
+        }
+    }))
+    .await;
+    Ok(Json(TunnelTest {
+        ok: !results.is_empty() && results.iter().all(|p| p.ok),
+        pops: results,
     }))
 }
 
@@ -873,17 +1008,20 @@ pub struct AuditView {
     pub id: i64,
     pub actor: Option<i64>,
     pub action: String,
-    #[schema(value_type = Object)]
+    #[schema(value_type = Option<serde_json::Value>)]
     pub payload: Option<serde_json::Value>,
     pub ip: Option<String>,
     pub ts: i64,
 }
 
 #[derive(Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct AuditQuery {
     /// Entries older than this id (paging).
+    #[param(required = false)]
     pub before: Option<i64>,
     /// 1-500, default 100
+    #[param(required = false)]
     pub limit: Option<i64>,
 }
 

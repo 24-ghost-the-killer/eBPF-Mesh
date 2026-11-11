@@ -484,6 +484,240 @@
         }
       }
     },
+    "/api/v1/auth/webauthn/credentials": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "list",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PasskeyView"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/auth/webauthn/credentials/{id}": {
+      "delete": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Remove a passkey. The last remaining second factor cannot be removed.",
+        "operationId": "remove",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/auth/webauthn/login/finish": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Finish the passkey step: the session counts as 2FA-verified.",
+        "operationId": "login_finish",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginFinish"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusResp"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/auth/webauthn/login/start": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Start the passkey step of a login. Returns the\nPublicKeyCredentialRequestOptions for navigator.credentials.get().",
+        "operationId": "login_start",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/auth/webauthn/register/finish": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Finish adding a passkey. The first passkey (with no authenticator app)\nturns 2FA on: every other session of the user is logged out.",
+        "operationId": "register_finish",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterFinish"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PasskeyView"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/auth/webauthn/register/start": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Start adding a passkey. Returns the PublicKeyCredentialCreationOptions\n(`{\"publicKey\": {...}}`) for navigator.credentials.create().",
+        "operationId": "register_start",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/me": {
       "get": {
         "tags": [
@@ -1129,26 +1363,20 @@
           },
           {
             "name": "return",
-            "in": "path",
+            "in": "query",
             "description": "tunnel (default) or dsr",
-            "required": true,
+            "required": false,
             "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             }
           },
           {
             "name": "device",
-            "in": "path",
+            "in": "query",
             "description": "Use an existing tunnel device (e.g. tunl0) instead of creating one.",
-            "required": true,
+            "required": false,
             "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             }
           }
         ],
@@ -1163,6 +1391,81 @@
             }
           },
           "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/tenants/{tid}/assets/{aid}/tunnel-test": {
+      "post": {
+        "tags": [
+          "assets"
+        ],
+        "summary": "Tunnel test (ADR 0020): every live PoP pings the protected IP through\nthe tunnel; a reply proves delivery and the return tunnel.",
+        "operationId": "tunnel_test",
+        "parameters": [
+          {
+            "name": "tid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "aid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TunnelTest"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
             "content": {
               "application/json": {
                 "schema": {
@@ -1200,27 +1503,21 @@
           },
           {
             "name": "before",
-            "in": "path",
+            "in": "query",
             "description": "Entries older than this id (paging).",
-            "required": true,
+            "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "format": "int64"
             }
           },
           {
             "name": "limit",
-            "in": "path",
+            "in": "query",
             "description": "1-500, default 100",
-            "required": true,
+            "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "format": "int64"
             }
           }
@@ -1242,6 +1539,64 @@
         "security": [
           {
             "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/tenants/{tid}/live": {
+      "get": {
+        "tags": [
+          "traffic"
+        ],
+        "summary": "Live traffic for the overview (WebSocket, 1 frame per second, JSON).",
+        "operationId": "live",
+        "parameters": [
+          {
+            "name": "tid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "WebSocket; text frames carry LiveFrame JSON",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LiveFrame"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "api_key": []
           }
         ]
       }
@@ -1717,7 +2072,6 @@
         "required": [
           "id",
           "action",
-          "payload",
           "ts"
         ],
         "properties": {
@@ -1741,9 +2095,7 @@
               "null"
             ]
           },
-          "payload": {
-            "type": "object"
-          },
+          "payload": {},
           "ts": {
             "type": "integer",
             "format": "int64"
@@ -1775,7 +2127,7 @@
           "services": {
             "type": "array",
             "items": {
-              "type": "object"
+              "$ref": "#/components/schemas/Service"
             },
             "description": "Ports to allow (only enforced once enforce_services is on)."
           }
@@ -1922,6 +2274,52 @@
           }
         }
       },
+      "LiveFrame": {
+        "type": "object",
+        "description": "One WebSocket message (JSON text frame), once per second.",
+        "required": [
+          "ts",
+          "total",
+          "pops",
+          "verdicts"
+        ],
+        "properties": {
+          "pops": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PopRates"
+            },
+            "description": "One entry per PoP that reported in the last 5 seconds."
+          },
+          "total": {
+            "$ref": "#/components/schemas/Rates"
+          },
+          "ts": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix ms.",
+            "minimum": 0
+          },
+          "verdicts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VerdictRate"
+            },
+            "description": "Non-zero rates per verdict (all PoPs)."
+          }
+        }
+      },
+      "LoginFinish": {
+        "type": "object",
+        "required": [
+          "credential"
+        ],
+        "properties": {
+          "credential": {
+            "description": "The PublicKeyCredential from navigator.credentials.get(), as JSON."
+          }
+        }
+      },
       "LoginReq": {
         "type": "object",
         "required": [
@@ -2027,6 +2425,34 @@
           }
         }
       },
+      "PasskeyView": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "last_used_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
       "PolicyView": {
         "type": "object",
         "required": [
@@ -2064,7 +2490,7 @@
           "services": {
             "type": "array",
             "items": {
-              "type": "object"
+              "$ref": "#/components/schemas/Service"
             },
             "example": [
               {
@@ -2106,6 +2532,24 @@
           }
         }
       },
+      "PopRates": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Rates"
+          },
+          {
+            "type": "object",
+            "required": [
+              "pop"
+            ],
+            "properties": {
+              "pop": {
+                "type": "string"
+              }
+            }
+          }
+        ]
+      },
       "PopStatus": {
         "type": "object",
         "required": [
@@ -2144,6 +2588,74 @@
             "items": {
               "$ref": "#/components/schemas/PopStatus"
             }
+          }
+        }
+      },
+      "Rates": {
+        "type": "object",
+        "description": "Packets and bits per second, split the way the overview graph shows them.",
+        "required": [
+          "in_pps",
+          "in_bps",
+          "filtered_pps",
+          "filtered_bps",
+          "clean_pps",
+          "clean_bps",
+          "return_pps",
+          "return_bps"
+        ],
+        "properties": {
+          "clean_bps": {
+            "type": "number",
+            "format": "double"
+          },
+          "clean_pps": {
+            "type": "number",
+            "format": "double",
+            "description": "in - filtered: what reaches (or would reach) the origin."
+          },
+          "filtered_bps": {
+            "type": "number",
+            "format": "double"
+          },
+          "filtered_pps": {
+            "type": "number",
+            "format": "double",
+            "description": "Traffic the filters reject: dropped in mitigate mode, only counted\nin observe mode."
+          },
+          "in_bps": {
+            "type": "number",
+            "format": "double"
+          },
+          "in_pps": {
+            "type": "number",
+            "format": "double",
+            "description": "Everything that arrived for the tenant's protected IPs."
+          },
+          "return_bps": {
+            "type": "number",
+            "format": "double"
+          },
+          "return_pps": {
+            "type": "number",
+            "format": "double",
+            "description": "The origin's replies forwarded by the PoPs (return tunnel)."
+          }
+        }
+      },
+      "RegisterFinish": {
+        "type": "object",
+        "required": [
+          "name",
+          "credential"
+        ],
+        "properties": {
+          "credential": {
+            "description": "The PublicKeyCredential from navigator.credentials.create(), as JSON."
+          },
+          "name": {
+            "type": "string",
+            "description": "A label for the passkey, e.g. \"Laptop\"."
           }
         }
       },
@@ -2199,6 +2711,28 @@
               "string",
               "null"
             ]
+          }
+        }
+      },
+      "Service": {
+        "type": "object",
+        "description": "An allowed service (OpenAPI shape of `ServiceDoc`).",
+        "required": [
+          "proto"
+        ],
+        "properties": {
+          "port": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "TCP/UDP destination port; omit for every port of the protocol.",
+            "minimum": 0
+          },
+          "proto": {
+            "type": "string",
+            "description": "\"tcp\", \"udp\", \"icmp\", \"icmpv6\" or a protocol number."
           }
         }
       },
@@ -2282,6 +2816,66 @@
           }
         }
       },
+      "TunnelTest": {
+        "type": "object",
+        "required": [
+          "ok",
+          "pops"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "description": "Every live PoP reached the protected IP through the tunnel (and at\nleast one PoP is live)."
+          },
+          "pops": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TunnelTestPop"
+            }
+          }
+        }
+      },
+      "TunnelTestPop": {
+        "type": "object",
+        "required": [
+          "pop",
+          "ok",
+          "sent",
+          "received"
+        ],
+        "properties": {
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ok": {
+            "type": "boolean",
+            "description": "At least one probe came back through the tunnel."
+          },
+          "pop": {
+            "type": "string"
+          },
+          "received": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "rtt_ms": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "sent": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
       "UserView": {
         "type": "object",
         "required": [
@@ -2307,6 +2901,27 @@
           },
           "mfa_enabled": {
             "type": "boolean"
+          }
+        }
+      },
+      "VerdictRate": {
+        "type": "object",
+        "required": [
+          "verdict",
+          "pps",
+          "bps"
+        ],
+        "properties": {
+          "bps": {
+            "type": "number",
+            "format": "double"
+          },
+          "pps": {
+            "type": "number",
+            "format": "double"
+          },
+          "verdict": {
+            "type": "string"
           }
         }
       }

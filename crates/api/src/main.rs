@@ -111,13 +111,8 @@ async fn serve(cfg: Config) -> Result<()> {
         .context("connecting to PostgreSQL")?;
     let data_key = crypto::DataKey::from_base64(&Config::env(&cfg.auth.data_key_env)?)?;
     let listen = cfg.server.listen;
-    let state = AppState {
-        mailer: Arc::from(mail::from_config(&cfg.mail)),
-        cfg: Arc::new(cfg),
-        pool,
-        data_key,
-        outbox: Arc::new(tokio::sync::Notify::new()),
-    };
+    let mailer = Arc::from(mail::from_config(&cfg.mail));
+    let state = AppState::new(cfg, pool, mailer, data_key)?;
     start_nats(&state).await?;
     let listener = tokio::net::TcpListener::bind(listen)
         .await

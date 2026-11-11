@@ -27,6 +27,8 @@ pub struct Lab {
     /// The API's own pool (role sentinel_api: subject to RLS).
     pub api_pool: PgPool,
     pub db_url_api: String,
+    /// Feed stats into the live view without NATS.
+    pub live: sentinel_api::live::LiveHub,
 }
 
 fn url_with_db(base: &str, db: &str, user: &str) -> String {
@@ -51,6 +53,11 @@ impl Lab {
             "t_{}",
             &crypto::token().to_lowercase().replace(['-', '_'], "")[..12]
         );
+        // Migrations and ALTER ROLE touch cluster-wide catalogs (roles,
+        // grants): tests running in parallel would fail with "tuple
+        // concurrently updated", so set databases up one at a time.
+        static SETUP: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+        let _setup = SETUP.lock().await;
         let mut c = PgConnection::connect(&base)
             .await
             .expect("connect to test cluster");
@@ -97,13 +104,15 @@ impl Lab {
         .unwrap();
         cfg.validate().unwrap();
         let key = base64::engine::general_purpose::STANDARD.encode(crypto::random_bytes::<32>());
-        let state = AppState {
-            mailer: Arc::from(mail::from_config(&cfg.mail)),
-            cfg: Arc::new(cfg),
-            pool: api_pool.clone(),
-            data_key: crypto::DataKey::from_base64(&key).unwrap(),
-            outbox: Arc::new(tokio::sync::Notify::new()),
-        };
+        let mailer = Arc::from(mail::from_config(&cfg.mail));
+        let state = AppState::new(
+            cfg,
+            api_pool.clone(),
+            mailer,
+            crypto::DataKey::from_base64(&key).unwrap(),
+        )
+        .unwrap();
+        let live = state.live.clone();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
@@ -120,6 +129,7 @@ impl Lab {
             su,
             api_pool,
             db_url_api,
+            live,
         }
     }
 

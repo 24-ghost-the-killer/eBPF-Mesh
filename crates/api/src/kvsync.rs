@@ -21,8 +21,8 @@ use tracing::{info, warn};
 
 use sentinel_common::msg::{
     AssetDoc, ConfigAck, FragDoc, HealthMsg, ModeDoc, PlatformDoc, PolicyDoc, RuleDoc, RulesDoc,
-    ServiceDoc, ServicesDoc, BUCKET_PLATFORM, BUCKET_RULES, BUCKET_SERVICES, BUCKET_TENANTS,
-    PLATFORM_KEY, SCHEMA_V,
+    ServiceDoc, ServicesDoc, StatsMsg, BUCKET_PLATFORM, BUCKET_RULES, BUCKET_SERVICES,
+    BUCKET_TENANTS, PLATFORM_KEY, SCHEMA_V,
 };
 use sentinel_common::prefix::Prefix;
 
@@ -298,6 +298,29 @@ async fn drain_once(pool: &PgPool, js: &async_nats::jetstream::Context) -> Resul
         .await?;
     tx.commit().await?;
     Ok(done.len())
+}
+
+/// Keeps the latest stats.<pop> per PoP for the live view.
+pub async fn stats_consumer(hub: crate::live::LiveHub, nats: async_nats::Client) {
+    loop {
+        match nats.subscribe("stats.>").await {
+            Ok(mut sub) => {
+                while let Some(msg) = sub.next().await {
+                    match serde_json::from_slice::<StatsMsg>(&msg.payload) {
+                        Ok(m) if msg.subject.as_str() == format!("stats.{}", m.pop) => {
+                            hub.update(m)
+                        }
+                        Ok(m) => {
+                            warn!(subject = %msg.subject, pop = %m.pop, "stats for another PoP")
+                        }
+                        Err(e) => warn!("ignoring stats: {e}"),
+                    }
+                }
+            }
+            Err(e) => warn!("subscribe stats.>: {e}"),
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
 }
 
 /// Records agents' acknowledgements (config_acks) and health (pops).

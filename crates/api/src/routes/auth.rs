@@ -264,7 +264,7 @@ pub async fn login(
         ));
     }
     let row: Option<LoginRow> = sqlx::query_as(
-        "SELECT id, password_hash, email_verified, (totp_secret IS NOT NULL) AS mfa_enabled \
+        "SELECT id, password_hash, email_verified, user_mfa_enabled(id) AS mfa_enabled \
          FROM users WHERE email = $1",
     )
     .bind(&email)
@@ -365,10 +365,15 @@ pub async fn totp_setup(
         .as_ref()
         .and(c.user_id)
         .ok_or_else(ApiError::unauthorized)?;
-    if c.mfa_enabled {
+    let has_totp: bool =
+        sqlx::query_scalar("SELECT totp_secret IS NOT NULL FROM users WHERE id = $1")
+            .bind(user)
+            .fetch_one(&state.pool)
+            .await?;
+    if has_totp {
         return Err(ApiError::conflict(
             "mfa_enabled",
-            "two-factor authentication is already on",
+            "an authenticator app is already set up",
         ));
     }
     let secret = random_bytes::<20>();
@@ -462,7 +467,10 @@ pub async fn totp_verify(
             .fetch_one(&state.pool)
             .await?;
     let Some(secret) = secret else {
-        return Ok(status("ok")); // no 2FA on this account
+        return Err(ApiError::bad_request(
+            "no_totp",
+            "this account has no authenticator app; use a passkey",
+        ));
     };
     let failures: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM auth_failures WHERE email = $1 AND ts > now() - make_interval(mins => $2)",

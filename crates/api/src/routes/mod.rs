@@ -3,3 +3,4 @@ pub mod auth;
 pub mod me;
 pub mod platform;
 pub mod tenant;
+pub mod webauthn;

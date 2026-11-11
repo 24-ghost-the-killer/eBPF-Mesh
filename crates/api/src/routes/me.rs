@@ -39,7 +39,7 @@ pub struct MeResp {
 
 pub async fn user_view(state: &AppState, user: i64) -> ApiResult<UserView> {
     Ok(sqlx::query_as(
-        "SELECT id, email::text AS email, email_verified, (totp_secret IS NOT NULL) AS mfa_enabled, \
+        "SELECT id, email::text AS email, email_verified, user_mfa_enabled(id) AS mfa_enabled, \
          is_platform_admin FROM users WHERE id = $1",
     )
     .bind(user)

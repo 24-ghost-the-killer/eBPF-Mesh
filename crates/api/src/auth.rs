@@ -322,7 +322,7 @@ async fn authenticate(
     let hash = sha256_hex(&token);
     let row: Option<SessionRow> = sqlx::query_as(
         "SELECT s.user_id, s.mfa_done, s.csrf_token, u.is_platform_admin, \
-                (u.totp_secret IS NOT NULL) AS mfa_enabled, \
+                user_mfa_enabled(u.id) AS mfa_enabled, \
                 (s.last_seen < now() - interval '1 minute') AS stale \
          FROM sessions s JOIN users u ON u.id = s.user_id \
          WHERE s.token_hash = $1 AND s.expires_at > now() \
