@@ -2,13 +2,21 @@
 /*
  * Sentinel-Edge XDP program.
  *
- * Phase 1 pipeline:
- *   1. parse; malformed -> XDP_DROP
- *   2. non-IP (ARP, LLDP, ...) -> XDP_PASS (the PoP needs ARP/ND for BGP)
- *   3. non-first fragments -> XDP_PASS (policy for them arrives in phase 2)
- *   4. everything else -> XDP_PASS
- * Every verdict is counted per (tenant, verdict) in xs_stats. With
- * XS_CFG_F_OBSERVE set, drops are counted but the packet is passed.
+ * Pipeline (cheapest checks first):
+ *   1. parse; malformed -> drop                         [global]
+ *      non-IP (ARP, LLDP, ...) -> pass
+ *   2. to the PoP itself (unicast IP, IPv6 ND) -> pass  [global]
+ *   3. bogon source -> drop                              [global]
+ *   4. tenant lookup                                     (phase 3; until then
+ *                                                         one default policy)
+ *   5. allowlist -> pass, skipping 6-8                   [policy]
+ *   6. blocklist (unexpired) -> drop                     [policy]
+ *   7. allowed services / fragments -> drop the rest     [policy]
+ *   8. per-source token bucket; SYN-cookie verification  [policy]
+ *
+ * [global] drops obey only the XS_CFG_F_OBSERVE kill switch. [policy] drops
+ * and challenges happen only when the policy has XS_P_MITIGATE (and the kill
+ * switch is off); otherwise the verdict is counted and the packet passed.
  */
 #include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
@@ -16,6 +24,7 @@
 #include "abi.h"
 #include "maps.h"
 #include "parse.h"
+#include "policy.h"
 
 static __always_inline void xs_count(__u32 tenant, __u32 verdict, __u64 bytes)
 {
@@ -37,47 +46,63 @@ static __always_inline void xs_count(__u32 tenant, __u32 verdict, __u64 bytes)
 	val->bytes += bytes;
 }
 
-static __always_inline __u32 xs_cfg_flags(void)
-{
-	__u32 zero = 0;
-	struct xs_cfg *cfg = bpf_map_lookup_elem(&xs_cfg, &zero);
-
-	return cfg ? cfg->flags : 0;
-}
-
 SEC("xdp")
 int xs_xdp(struct xdp_md *ctx)
 {
 	void *data = (void *)(long)ctx->data;
 	void *data_end = (void *)(long)ctx->data_end;
 	__u32 pkt_len = data_end - data;
+	__u32 zero = 0, verdict, tenant = XS_TENANT_GLOBAL;
+	const struct xs_cfg *cfg = bpf_map_lookup_elem(&xs_cfg, &zero);
+	int global_observe = cfg && (cfg->flags & XS_CFG_F_OBSERVE);
 	struct xs_pkt pkt = {};
-	__u32 verdict;
-	int action;
+	int rc, action, tx = 0;
 
-	switch (xs_parse(data, data_end, pkt_len, &pkt)) {
-	case XS_P_OK:
-		verdict = XS_V_PASS;
-		action = XDP_PASS;
-		break;
-	case XS_P_NON_IP:
+	rc = xs_parse(data, data_end, pkt_len, &pkt);
+	if (rc == XS_P_MALFORMED) {
+		verdict = XS_V_DROP_MALFORMED;
+		action = global_observe ? XDP_PASS : XDP_DROP;
+		goto out;
+	}
+	if (rc == XS_P_NON_IP) {
 		verdict = XS_V_PASS_NON_IP;
 		action = XDP_PASS;
-		break;
-	case XS_P_FRAGMENT:
-		verdict = XS_V_FRAGMENT;
+		goto out;
+	}
+	if (xs_is_local(&pkt, cfg)) {
+		verdict = XS_V_PASS_LOCAL;
 		action = XDP_PASS;
-		break;
-	default:
-		verdict = XS_V_DROP_MALFORMED;
-		action = XDP_DROP;
-		break;
+		goto out;
+	}
+	if (xs_is_bogon(&pkt)) {
+		verdict = XS_V_DROP_BOGON;
+		action = global_observe ? XDP_PASS : XDP_DROP;
+		goto out;
 	}
 
-	xs_count(XS_TENANT_GLOBAL, verdict, pkt_len);
+	{
+		/* Phase 2: one default policy, tenant 0, asset 0. */
+		const struct xs_policy *pol = bpf_map_lookup_elem(&xs_policy, &zero);
+		int mitigate;
 
-	if (action == XDP_DROP && (xs_cfg_flags() & XS_CFG_F_OBSERVE))
-		action = XDP_PASS;
+		if (!pol) {
+			verdict = XS_V_PASS;
+			action = XDP_PASS;
+			goto out;
+		}
+		mitigate = (pol->flags & XS_P_MITIGATE) && !global_observe;
+		verdict = xs_policy_verdict(ctx, &pkt, cfg, pol, tenant, 0,
+					    rc == XS_P_FRAGMENT, pkt_len,
+					    mitigate, &tx);
+		if (tx)
+			action = XDP_TX;
+		else
+			action = mitigate && xs_verdict_drops(verdict) ? XDP_DROP :
+									 XDP_PASS;
+	}
+out:
+	/* Bytes counted as received, before any rewrite. */
+	xs_count(tenant, verdict, pkt_len);
 	return action;
 }
 

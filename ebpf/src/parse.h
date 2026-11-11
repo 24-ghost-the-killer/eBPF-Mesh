@@ -65,6 +65,7 @@ struct xs_pkt {
 	__u8 tcp_flags;   /* byte 13 of the TCP header */
 	__u8 vlan_count;
 	__u8 frag;        /* enum xs_frag */
+	__u8 icmp_type;   /* ICMP/ICMPv6 type (valid when l4_proto is ICMP*) */
 	__be16 sport;     /* 0 unless TCP/UDP */
 	__be16 dport;
 	__u16 l3_off;     /* offset of the IP header from the frame start */
@@ -138,6 +139,7 @@ static __always_inline int xs_parse_l4(void *l4, void *data_end, __u32 avail,
 		if (l4 + sizeof(struct icmphdr) > data_end ||
 		    avail < sizeof(struct icmphdr))
 			return XS_P_MALFORMED;
+		pkt->icmp_type = *(__u8 *)l4;
 		return XS_P_OK;
 	case IPPROTO_ICMPV6:
 		if (pkt->l3_proto != ETH_P_IPV6)
@@ -145,6 +147,7 @@ static __always_inline int xs_parse_l4(void *l4, void *data_end, __u32 avail,
 		if (l4 + sizeof(struct icmp6hdr) > data_end ||
 		    avail < sizeof(struct icmp6hdr))
 			return XS_P_MALFORMED;
+		pkt->icmp_type = *(__u8 *)l4;
 		return XS_P_OK;
 	default:
 		/* Other protocols (GRE, ESP, SCTP, ...) carry no parsed fields. */
