@@ -5,6 +5,8 @@
 #   make test               fmt + clippy + Rust unit tests (any OS)
 #   sudo make test-bpf      BPF_PROG_TEST_RUN parser tests (Linux, root)
 #   sudo make test-integration  veth/netns end-to-end test (Linux, root)
+#   make test-web           web app: API client drift, typecheck, Vitest, build
+#   sudo make test-e2e      Playwright onboarding/isolation tests against the lab
 #   make docker-test        everything above inside a privileged container
 #                           (use this on macOS)
 #
@@ -22,15 +24,20 @@ PASS_OBJ   := $(BUILD)/tests/xdp_pass.o
 TEST_XDP   := $(BUILD)/tests/test_xdp
 UNAME_S    := $(shell uname -s)
 
-DOCKER_IMAGE ?= sentinel-dev
-DOCKER_RUN    = docker run --rm --privileged \
-	-v "$(CURDIR)":/src \
+DOCKER_BASE  ?= sentinel-dev
+DOCKER_IMAGE ?= sentinel-web
+# Linux node_modules and .next live in volumes, not in the (macOS) checkout.
+DOCKER_VOLS   = -v "$(CURDIR)":/src \
 	-v sentinel-cargo:/usr/local/cargo/registry \
 	-v sentinel-target:/target -e CARGO_TARGET_DIR=/target \
-	$(DOCKER_IMAGE)
+	-v sentinel-nm-root:/src/node_modules -v sentinel-nm-web:/src/web/node_modules \
+	-v sentinel-nm-e2e:/src/tests/e2e/node_modules -v sentinel-next:/src/web/.next \
+	-v sentinel-pnpm:/pnpm-store -v sentinel-playwright:/ms-playwright \
+	-e PNPM_STORE_DIR=/pnpm-store -e E2E_ARTIFACTS=/src/build/e2e-artifacts
+DOCKER_RUN    = docker run --rm --privileged $(DOCKER_VOLS) $(DOCKER_IMAGE)
 
 .PHONY: all build bpf rust test lint test-api test-bpf test-integration test-all \
-	docker-image docker-test docker-shell lab-up clean help
+	web-install test-web test-e2e docker-image docker-test docker-shell lab-up clean help
 
 all: build
 
@@ -85,20 +92,35 @@ test-integration: bpf $(PASS_OBJ)
 		PASS_OBJ="$(abspath $(PASS_OBJ))" tests/integration/$$t.sh; \
 	done
 
+web-install:
+	pnpm install --frozen-lockfile $(if $(PNPM_STORE_DIR),--store-dir $(PNPM_STORE_DIR))
+
+# Web app: generated API client matches docs/openapi.json, types, Vitest, build.
+test-web: web-install
+	pnpm --filter web check
+	pnpm --filter e2e exec tsc --noEmit -p .
+	pnpm --filter web build
+
+# Playwright against the full lab (root: namespaces, XDP). Needs node + pnpm.
+test-e2e: bpf $(PASS_OBJ)
+	@for b in "$(CTL)" "$(GEN)" "$(AGENT)" "$(API)"; do test -x "$$b" || { echo "missing $$b: run 'make rust' first (as your normal user)"; exit 1; }; done
+	CTL="$(abspath $(CTL))" GEN="$(abspath $(GEN))" AGENT="$(abspath $(AGENT))" \
+	API="$(abspath $(API))" PGSH="$(abspath tests/api/pg.sh)" \
+	RENDER="$(abspath deploy/nats/render-config.py)" BPF_OBJ="$(abspath $(BPF_OBJ))" \
+	PASS_OBJ="$(abspath $(PASS_OBJ))" tests/integration/portal_e2e.sh
+
 # Everything, in order. Must run as root on Linux (used by docker-test).
-test-all: build test test-api test-bpf test-integration
+test-all: build test test-api test-bpf test-integration test-web test-e2e
 
 docker-image:
-	docker build -q -t $(DOCKER_IMAGE) -f deploy/docker/Dockerfile.dev deploy/docker
+	docker build -q -t $(DOCKER_BASE) -f deploy/docker/Dockerfile.dev deploy/docker
+	docker build -q -t $(DOCKER_IMAGE) --build-arg BASE=$(DOCKER_BASE) -f deploy/docker/Dockerfile.web deploy/docker
 
 docker-test: docker-image
 	$(DOCKER_RUN) make test-all
 
 docker-shell: docker-image
-	docker run --rm -it --privileged -v "$(CURDIR)":/src \
-		-v sentinel-cargo:/usr/local/cargo/registry \
-		-v sentinel-target:/target -e CARGO_TARGET_DIR=/target \
-		$(DOCKER_IMAGE) bash
+	docker run --rm -it --privileged $(DOCKER_VOLS) $(DOCKER_IMAGE) bash
 
 lab-up:
 	@echo "lab-up: the containerlab anycast lab arrives in phase 8"; exit 1
@@ -109,4 +131,4 @@ clean:
 	$(CARGO) clean
 
 help:
-	@sed -n '2,12p' Makefile
+	@sed -n '2,14p' Makefile
