@@ -5,8 +5,10 @@
 
 pub mod abi;
 pub mod lab;
+pub mod msg;
 pub mod pin;
 pub mod prefix;
 pub mod stats;
+pub mod telemetry;
 pub mod tunnel;
 pub mod units;

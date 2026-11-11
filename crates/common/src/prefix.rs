@@ -189,6 +189,19 @@ impl FromStr for Prefix {
     }
 }
 
+impl serde::Serialize for Prefix {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_str(self)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Prefix {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = <std::borrow::Cow<'de, str>>::deserialize(d)?;
+        s.parse().map_err(serde::de::Error::custom)
+    }
+}
+
 impl fmt::Display for Prefix {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

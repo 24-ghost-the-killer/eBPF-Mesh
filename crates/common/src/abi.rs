@@ -10,7 +10,7 @@
 use std::mem::{align_of, size_of};
 use std::net::{Ipv4Addr, Ipv6Addr};
 
-pub const XS_ABI_VERSION: u32 = 3;
+pub const XS_ABI_VERSION: u32 = 4;
 pub const XS_MAX_VLAN_TAGS: u32 = 2;
 pub const XS_MAX_IPV6_EXT_HDRS: u32 = 4;
 pub const XS_STATS_MAX_ENTRIES: u32 = 65536;
@@ -19,6 +19,7 @@ pub const XS_SERVICES_MAX_ENTRIES: u32 = 4096;
 pub const XS_RL_MAX_ENTRIES: u32 = 262144;
 pub const XS_VERIFIED_MAX_ENTRIES: u32 = 262144;
 pub const XS_TENANTS_MAX_ENTRIES: u32 = 65536;
+pub const XS_EVENTS_RINGBUF_SIZE: u32 = 1 << 22;
 pub const XS_TUNNEL_OVERHEAD: u32 = 20;
 pub const XS_DEFAULT_MTU: u32 = 1500;
 pub const XS_TENANT_GLOBAL: u32 = 0;
@@ -140,6 +141,10 @@ impl TryFrom<u32> for Verdict {
     }
 }
 
+/// Global counters (`enum xs_counter`, index into xs_counters). Append-only.
+pub const XS_C_EVENTS_LOST: u32 = 0;
+pub const XS_C_COUNT: u32 = 1;
+
 /// Rule reasons (`enum xs_reason`). Append-only.
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -191,6 +196,9 @@ pub struct XsCfg {
     pub nexthop_mac: [u8; 6],
     /// 0 = XS_DEFAULT_MTU.
     pub uplink_mtu: u16,
+    /// Sample 1 in N packets to xs_events; 0 = off.
+    pub sample_rate: u32,
+    pub _pad: u32,
 }
 
 impl XsCfg {
@@ -328,6 +336,53 @@ pub struct XsRl {
     pub last_ns: u64,
 }
 
+/// `struct xs_event`: one sampled packet from the ring buffer.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct XsEvent {
+    /// CLOCK_BOOTTIME ns.
+    pub ts: u64,
+    pub tenant: u32,
+    pub asset: u32,
+    /// IPv4-mapped for IPv4.
+    pub src: [u8; 16],
+    pub dst: [u8; 16],
+    /// Network order.
+    pub sport: [u8; 2],
+    pub dport: [u8; 2],
+    pub proto: u8,
+    pub tcp_flags: u8,
+    pub verdict: u8,
+    /// 4 or 6.
+    pub family: u8,
+    pub len: u16,
+    pub _pad: u16,
+    pub sample_rate: u32,
+}
+
+impl XsEvent {
+    pub fn src_ip(&self) -> std::net::IpAddr {
+        ip_of(self.family, self.src)
+    }
+    pub fn dst_ip(&self) -> std::net::IpAddr {
+        ip_of(self.family, self.dst)
+    }
+    pub fn sport(&self) -> u16 {
+        u16::from_be_bytes(self.sport)
+    }
+    pub fn dport(&self) -> u16 {
+        u16::from_be_bytes(self.dport)
+    }
+}
+
+fn ip_of(family: u8, a: [u8; 16]) -> std::net::IpAddr {
+    let v6 = Ipv6Addr::from(a);
+    match (family, v6.to_ipv4_mapped()) {
+        (4, Some(v4)) => std::net::IpAddr::V4(v4),
+        _ => std::net::IpAddr::V6(v6),
+    }
+}
+
 /// `struct xs_stats_key`
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -344,7 +399,8 @@ pub struct XsStatsVal {
     pub bytes: u64,
 }
 
-const _: () = assert!(size_of::<XsCfg>() == 56 && align_of::<XsCfg>() == 8);
+const _: () = assert!(size_of::<XsCfg>() == 64 && align_of::<XsCfg>() == 8);
+const _: () = assert!(size_of::<XsEvent>() == 64 && align_of::<XsEvent>() == 8);
 const _: () = assert!(size_of::<XsTenantKey>() == 8 && align_of::<XsTenantKey>() == 4);
 const _: () = assert!(size_of::<XsTenant6Key>() == 20 && align_of::<XsTenant6Key>() == 4);
 const _: () = assert!(size_of::<XsAsset>() == 32 && align_of::<XsAsset>() == 4);
@@ -436,7 +492,9 @@ map_bytes!(
         .u32(s.verify_ttl_s)
         .u8s(&s.tunnel_ep4)
         .u8s(&s.nexthop_mac)
-        .u16(s.uplink_mtu),
+        .u16(s.uplink_mtu)
+        .u32(s.sample_rate)
+        .u32(s._pad),
     |r| XsCfg {
         flags: r.u32(),
         pop_ip4: r.arr(),
@@ -446,6 +504,51 @@ map_bytes!(
         tunnel_ep4: r.arr(),
         nexthop_mac: r.arr(),
         uplink_mtu: r.u16(),
+        sample_rate: r.u32(),
+        _pad: r.u32(),
+    }
+);
+map_bytes!(
+    XsEvent,
+    |s, w| w
+        .u64(s.ts)
+        .u32(s.tenant)
+        .u32(s.asset)
+        .u8s(&s.src)
+        .u8s(&s.dst)
+        .u8s(&s.sport)
+        .u8s(&s.dport)
+        .u8s(&[s.proto, s.tcp_flags, s.verdict, s.family])
+        .u16(s.len)
+        .u16(s._pad)
+        .u32(s.sample_rate),
+    |r| {
+        let (ts, tenant, asset, src, dst, sport, dport) = (
+            r.u64(),
+            r.u32(),
+            r.u32(),
+            r.arr(),
+            r.arr(),
+            r.arr(),
+            r.arr(),
+        );
+        let [proto, tcp_flags, verdict, family] = r.arr();
+        XsEvent {
+            ts,
+            tenant,
+            asset,
+            src,
+            dst,
+            sport,
+            dport,
+            proto,
+            tcp_flags,
+            verdict,
+            family,
+            len: r.u16(),
+            _pad: r.u16(),
+            sample_rate: r.u32(),
+        }
     }
 );
 map_bytes!(XsTenantKey, |s, w| w.u32(s.prefixlen).u8s(&s.addr), |r| {
@@ -643,6 +746,7 @@ mod tests {
             ("XS_RL_MAX_ENTRIES", XS_RL_MAX_ENTRIES),
             ("XS_VERIFIED_MAX_ENTRIES", XS_VERIFIED_MAX_ENTRIES),
             ("XS_TENANTS_MAX_ENTRIES", XS_TENANTS_MAX_ENTRIES),
+            ("XS_EVENTS_RINGBUF_SIZE", XS_EVENTS_RINGBUF_SIZE),
             ("XS_TUNNEL_OVERHEAD", XS_TUNNEL_OVERHEAD),
             ("XS_DEFAULT_MTU", XS_DEFAULT_MTU),
             ("XS_TENANT_GLOBAL", XS_TENANT_GLOBAL),
@@ -691,6 +795,14 @@ mod tests {
     }
 
     #[test]
+    fn counters_match_c() {
+        let e = c_enum_values("XS_C_");
+        assert_eq!(e.get("XS_C_EVENTS_LOST"), Some(&(XS_C_EVENTS_LOST as u64)));
+        assert_eq!(e.get("XS_C__COUNT"), Some(&(XS_C_COUNT as u64)));
+        assert_eq!(e.len(), 2, "C has counters Rust lacks");
+    }
+
+    #[test]
     fn struct_layouts_match_c() {
         let sizes = c_layout("sizeof");
         let aligns = c_layout("_Alignof");
@@ -716,6 +828,7 @@ mod tests {
             l!("xs_svc_key", XsSvcKey),
             l!("xs_addr_key", XsAddrKey),
             l!("xs_rl", XsRl),
+            l!("xs_event", XsEvent),
             l!("xs_stats_key", XsStatsKey),
             l!("xs_stats_val", XsStatsVal),
         ];
@@ -760,7 +873,32 @@ mod tests {
             tunnel_ep4: [198, 51, 100, 1],
             nexthop_mac: [2, 0, 0, 0, 0, 1],
             uplink_mtu: 9000,
+            sample_rate: 64,
+            _pad: 0,
         });
+        let mut src = [0u8; 16];
+        src[10] = 0xff;
+        src[11] = 0xff;
+        src[12..].copy_from_slice(&[203, 0, 113, 7]);
+        let ev = XsEvent {
+            ts: 5,
+            tenant: 1,
+            asset: 2,
+            src,
+            dst: [9; 16],
+            sport: 40000u16.to_be_bytes(),
+            dport: 443u16.to_be_bytes(),
+            proto: 6,
+            tcp_flags: 2,
+            verdict: 11,
+            family: 4,
+            len: 74,
+            _pad: 0,
+            sample_rate: 8,
+        };
+        round_trip(ev);
+        assert_eq!(ev.src_ip().to_string(), "203.0.113.7");
+        assert_eq!((ev.sport(), ev.dport()), (40000, 443));
         round_trip(XsTenantKey {
             prefixlen: 32,
             addr: [198, 51, 100, 10],

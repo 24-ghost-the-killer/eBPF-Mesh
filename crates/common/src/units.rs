@@ -49,6 +49,38 @@ pub fn expires_at(now_boot_ns: u64, ttl: Duration) -> u64 {
     now_boot_ns.saturating_add(ttl.as_nanos().min(u64::MAX as u128) as u64)
 }
 
+/// Converts an absolute Unix time (ms) into CLOCK_BOOTTIME ns using a pair of
+/// clock readings taken together. None if it is already in the past.
+pub fn unix_ms_to_boot_ns(expires_ms: u64, now_unix_ms: u64, now_boot_ns: u64) -> Option<u64> {
+    let left_ms = expires_ms.checked_sub(now_unix_ms).filter(|l| *l > 0)?;
+    Some(now_boot_ns.saturating_add(left_ms.saturating_mul(1_000_000)))
+}
+
+/// Current Unix time in milliseconds.
+pub fn now_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// `aa:bb:cc:dd:ee:ff` -> bytes.
+pub fn parse_mac(s: &str) -> Result<[u8; 6], String> {
+    let err = || format!("invalid MAC {s:?} (expected aa:bb:cc:dd:ee:ff)");
+    let parts: Vec<_> = s.split(':').collect();
+    if parts.len() != 6 {
+        return Err(err());
+    }
+    let mut mac = [0u8; 6];
+    for (b, p) in mac.iter_mut().zip(parts) {
+        if p.len() != 2 {
+            return Err(err());
+        }
+        *b = u8::from_str_radix(p, 16).map_err(|_| err())?;
+    }
+    Ok(mac)
+}
+
 pub const IPPROTO_ICMP: u8 = 1;
 pub const IPPROTO_TCP: u8 = 6;
 pub const IPPROTO_UDP: u8 = 17;
@@ -109,6 +141,14 @@ mod tests {
         assert_eq!(format_remaining(90000 * s, 0), "1d1h");
         assert_eq!(expires_at(u64::MAX - 1, Duration::from_secs(1)), u64::MAX);
         assert_eq!(expires_at(5, Duration::from_secs(1)), s + 5);
+    }
+
+    #[test]
+    fn unix_to_boot() {
+        assert_eq!(unix_ms_to_boot_ns(10_500, 10_000, 7), Some(7 + 500_000_000));
+        assert_eq!(unix_ms_to_boot_ns(10_000, 10_000, 7), None, "now = expired");
+        assert_eq!(unix_ms_to_boot_ns(9_000, 10_000, 7), None);
+        assert_eq!(unix_ms_to_boot_ns(u64::MAX, 0, 1), Some(u64::MAX));
     }
 
     #[test]
