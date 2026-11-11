@@ -205,6 +205,20 @@ endpoints regenerate the snapshot with
 `UPDATE_OPENAPI=1 cargo test -p sentinel-api --test openapi`, then the web
 client with `pnpm --filter web gen:api`.
 
+## Production deployment
+
+See [go-live.md](go-live.md) for the full order of steps.
+
+- **Control plane:** `cd deploy/compose`, `cp .env.example state/.env`,
+  edit it, `scripts/init.sh`, `docker compose --env-file state/.env up -d
+  --build`. Grafana listens on 127.0.0.1:3001 (SSH tunnel); PoP agents are
+  listed in `prometheus/targets/pops.json`. Backups: `scripts/backup.sh`.
+- **PoPs:** `deploy/ansible`, inventory from `inventories/example`,
+  `ansible-playbook -i inventories/<site>/hosts.yml playbooks/pop.yml`
+  (dry run until `bgp_export_enabled: true`).
+- **Tests:** `make deploy-artifacts deploy-test` (Linux Docker host) and
+  `make deploy-smoke`.
+
 ## The anycast lab (containerlab)
 
 ```sh

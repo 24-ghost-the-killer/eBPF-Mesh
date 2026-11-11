@@ -21,7 +21,9 @@ ASNs. Nothing here is meant to touch the real internet yet.
 | 6 | Portal v1: login, 2FA with passkeys, live overview, protected IPs with tunnel script/test, rules | done |
 | 7 | Analysis workers: detection, signed decisions, attacks pages, webhooks | done |
 | 8 | Anycast lab: containerlab + BIRD, health check, drain, ClickHouse history, admin panel | done |
-| 9 | Public website: home, how it works, pricing, status (hosted separately), contact | **done** |
+| 9 | Public website: home, how it works, pricing, status (hosted separately), contact | done |
+| 10a | Production deployment prepared: Ansible for PoPs (guard rails, dry run), compose control plane, monitoring, backups, go-live runbook | **done** |
+| 10b | Go-live on the real internet | needs the owner's go-ahead and resources |
 
 ## What exists today
 
@@ -82,6 +84,13 @@ ASNs. Nothing here is meant to touch the real internet yet.
   the admin panel (AS-path prepending); workers store flows in ClickHouse
   for per-PoP traffic history ([ADR 0023](docs/adr/0023-anycast-lab-drain-health.md),
   [ADR 0024](docs/adr/0024-traffic-history-clickhouse.md)).
+- **Deployment** (`deploy/ansible`, `deploy/compose`): Ansible roles for
+  PoP servers with guard rails (no lab/production mixing, import limits,
+  export only our prefixes, dry run until go-live, no SSH lock-out),
+  firewall, BIRD, agent and health check; a docker compose control plane
+  with Caddy TLS, PostgreSQL, ClickHouse, NATS, Prometheus alerts and a
+  Grafana dashboard, secret bootstrap and backups; a go-live runbook
+  ([docs/go-live.md](docs/go-live.md), [ADR 0026](docs/adr/0026-production-deployment.md)).
 - **Public website** (`web/app/(site)`): home with a live PoP map, how it
   works, pricing, status, contact; and a **status page** (`status-page/`,
   static files on its own host) that keeps working when the platform is down
@@ -119,6 +128,14 @@ ASNs. Nothing here is meant to touch the real internet yet.
   PostgreSQL, Vitest, Playwright browser tests against the full lab, CI.
 
 Acceptance tests:
+- phase 10a (`make deploy-test`, `make deploy-smoke`): the PoP playbook
+  refuses production/lab mixing and SSH lock-out, converges idempotently,
+  brings up BIRD, the agent (XDP), firewall and health timer; dry run
+  announces nothing, go-live exactly our prefix, a stopped agent withdraws
+  it (22 checks, run on the x86_64 VM); the control-plane stack comes up
+  from scratch with TLS, security headers, API and database, NATS,
+  workers, ClickHouse users, Prometheus, Grafana and a restorable backup
+  (21 checks).
 - phase 9 (`tests/e2e/site.spec.ts`): every public page renders, passes axe
   in light and dark mode, fits a phone and links to signup; the separate
   status page shows the PoPs and incidents and, with the API unreachable,
@@ -229,6 +246,8 @@ lab/                      containerlab anycast lab: topology, BIRD configs, scri
 migrations/clickhouse     flows + traffic_1m
 deploy/docker             development/test images (+ pinned NATS, Node, containerlab installers)
 deploy/health, systemd    PoP health check (timer), agent unit
+deploy/ansible            PoP provisioning (roles, guard rails, example inventory)
+deploy/compose            control plane (compose, Caddy, Prometheus, Grafana, init/backup)
 deploy/nats               NATS server config renderer (users, permissions, TLS)
 configs/                  example agent and API configuration
 docs/                     architecture, runbook, ADRs
@@ -250,8 +269,8 @@ docs/                     architecture, runbook, ADRs
   ([ADR 0011](docs/adr/0011-expiry-and-fail-open.md)).
 - The portal has no members/API-key/audit screens yet (the API endpoints
   exist).
-- The lab is IPv4 only and runs on one Docker host; Ansible provisioning of
-  real PoPs is not written yet (systemd units and the health check are).
+- The lab is IPv4 only and runs on one Docker host. Nothing has been
+  announced on the real internet (phase 10b). Mail is log-only (no SMTP).
   ClickHouse traffic counts are sampled estimates.
 - Detection is statistical (no ML). Only block decisions exist (no per-source
   rate-limit decisions). With several workers, the SYN-rate and new-source

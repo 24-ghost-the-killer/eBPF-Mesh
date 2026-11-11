@@ -27,7 +27,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             clang llvm libbpf-dev libelf-dev zlib1g-dev pkg-config \
-            iproute2 iputils-ping jq curl ethtool openssl python3 postgresql
+            iproute2 iputils-ping jq curl ethtool openssl python3 postgresql ansible-core
 
       - name: Install NATS server and CLI (pinned, checksummed)
         run: sudo deploy/docker/install-nats.sh
@@ -63,6 +63,15 @@ jobs:
 
       - name: Browser tests against the lab (Playwright)
         run: sudo env "PATH=$PATH" PLAYWRIGHT_BROWSERS_PATH=$PLAYWRIGHT_BROWSERS_PATH E2E_ARTIFACTS=$PWD/build/e2e-artifacts make test-e2e
+
+      - name: Deployment - Ansible syntax and the PoP playbook against a stand-in server
+        run: |
+          make deploy-check
+          make deploy-artifacts
+          make deploy-test
+
+      - name: Deployment - control-plane stack from scratch (docker compose)
+        run: make deploy-smoke
 
       - name: Keep browser traces of failed tests
         if: failure()

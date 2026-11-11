@@ -39,7 +39,8 @@ DOCKER_VOLS   = -v "$(CURDIR)":/src \
 DOCKER_RUN    = docker run --rm --privileged $(DOCKER_VOLS) $(DOCKER_IMAGE)
 
 .PHONY: all build bpf rust test lint test-api test-bpf test-integration test-all \
-	web-install test-web test-e2e docker-image docker-test docker-shell lab-up lab-down lab-test clean help
+	web-install test-web test-e2e docker-image docker-test docker-shell lab-up lab-down lab-test \
+	deploy-check deploy-artifacts deploy-test deploy-smoke clean help
 
 all: build
 
@@ -61,6 +62,7 @@ lint:
 
 test: lint
 	$(CARGO) test --workspace
+	python3 -m unittest discover -s deploy/ansible/filter_plugins
 
 # API integration tests against a throwaway PostgreSQL (initdb with a unix
 # socket in a temp dir: bind mounts may not support sockets; as root the
@@ -132,6 +134,25 @@ LAB_RUN = docker run --rm --privileged --network host --pid host \
 	-v "$(CURDIR)":"$(CURDIR)" -w "$(CURDIR)" \
 	-v sentinel-cargo:/usr/local/cargo/registry -v sentinel-target:/target \
 	-e CARGO_TARGET_DIR=/target -e KEEP $(DOCKER_IMAGE)
+
+# Production deployment (phase 10a, ADR 0026).
+#   deploy-check   Ansible syntax check (needs ansible-core)
+#   deploy-test    PoP playbook against a stand-in server (Linux Docker host;
+#                  ARTIFACTS = dir with bin/{sentinel-agent,sentinelctl,sentinel-worker}, xdp_main.o)
+#   deploy-smoke   control-plane compose stack from scratch (any Docker host)
+deploy-check:
+	cd deploy/ansible && ansible-playbook --syntax-check -i inventories/example/hosts.yml playbooks/pop.yml
+
+deploy-artifacts: build
+	rm -rf build/deploy && mkdir -p build/deploy/bin
+	cp $(AGENT) $(CTL) $(TARGET_DIR)/debug/sentinel-worker build/deploy/bin/
+	cp $(BPF_OBJ) build/deploy/
+
+deploy-test:
+	ARTIFACTS="$(or $(ARTIFACTS),$(abspath build/deploy))" tests/deploy/ansible_test.sh
+
+deploy-smoke:
+	tests/deploy/compose_smoke.sh
 
 lab-up: docker-image
 	$(LAB_RUN) lab/scripts/lab.sh up
