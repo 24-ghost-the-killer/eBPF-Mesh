@@ -1,0 +1,99 @@
+/* SPDX-License-Identifier: MIT OR Apache-2.0 */
+@import "tailwindcss";
+
+/* Dark mode follows the system unless the user picked one (html.light / html.dark). */
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --color-bg: var(--bg);
+  --color-fg: var(--fg);
+  --color-muted: var(--muted);
+  --color-muted-fg: var(--muted-fg);
+  --color-card: var(--card);
+  --color-border: var(--border);
+  --color-primary: var(--primary);
+  --color-primary-fg: var(--primary-fg);
+  --color-danger: var(--danger);
+  --color-danger-fg: var(--danger-fg);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --color-ring: var(--ring);
+  --color-series-in: var(--series-in);
+  --color-series-clean: var(--series-clean);
+  --color-series-filtered: var(--series-filtered);
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Liberation Sans", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+:root {
+  --bg: #f7f8fa;
+  --fg: #0f172a;
+  --muted: #eef1f5;
+  --muted-fg: #4b5563;
+  --card: #ffffff;
+  --border: #d9dee6;
+  --primary: #1d4ed8;
+  --primary-fg: #ffffff;
+  --danger: #b91c1c;
+  --danger-fg: #ffffff;
+  --ok: #065f46;
+  --warn: #854d0e;
+  --ring: #2563eb;
+  --series-in: #2563eb;
+  --series-clean: #059669;
+  --series-filtered: #dc2626;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not(.light) {
+    --bg: #0b1020;
+    --fg: #e5e9f0;
+    --muted: #161d2f;
+    --muted-fg: #a3adbf;
+    --card: #11182a;
+    --border: #273148;
+    --primary: #60a5fa;
+    --primary-fg: #0b1020;
+    --danger: #f87171;
+    --danger-fg: #0b1020;
+    --ok: #34d399;
+    --warn: #fbbf24;
+    --ring: #93c5fd;
+    --series-in: #60a5fa;
+    --series-clean: #34d399;
+    --series-filtered: #f87171;
+    color-scheme: dark;
+  }
+}
+
+:root.dark {
+  --bg: #0b1020;
+  --fg: #e5e9f0;
+  --muted: #161d2f;
+  --muted-fg: #a3adbf;
+  --card: #11182a;
+  --border: #273148;
+  --primary: #60a5fa;
+  --primary-fg: #0b1020;
+  --danger: #f87171;
+  --danger-fg: #0b1020;
+  --ok: #34d399;
+  --warn: #fbbf24;
+  --ring: #93c5fd;
+  --series-in: #60a5fa;
+  --series-clean: #34d399;
+  --series-filtered: #f87171;
+  color-scheme: dark;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-sans);
+}
+
+:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}

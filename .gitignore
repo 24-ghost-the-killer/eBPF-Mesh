@@ -6,3 +6,8 @@
 *.nk
 *.pem
 *.key
+node_modules
+# web
+node_modules/
+/tests/e2e/test-results/
+/tests/e2e/playwright-report/

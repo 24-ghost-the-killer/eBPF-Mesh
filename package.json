@@ -1,0 +1,9 @@
+{
+  "name": "sentinel-edge",
+  "private": true,
+  "packageManager": "pnpm@12.4.1",
+  "scripts": {
+    "web:test": "pnpm --filter web test",
+    "web:build": "pnpm --filter web build"
+  }
+}
