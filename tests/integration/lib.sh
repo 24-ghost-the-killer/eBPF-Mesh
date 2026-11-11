@@ -97,11 +97,17 @@ lab_net() {
 	mountpoint -q /sys/fs/bpf || mount -t bpf bpf /sys/fs/bpf
 	for ns in "$NS_A" "$NS_B" "$NS_C"; do
 		ip netns add "$ns"
-		sysctls "$ns" net.ipv6.conf.all.disable_ipv6=1 net.ipv6.conf.default.disable_ipv6=1
+		# New namespaces may inherit the host's sysctls (Ubuntu: rp_filter=2);
+		# make the lab independent of them. Strict/loose reverse-path checks
+		# would drop ARP from sources the PoP has no route to.
+		sysctls "$ns" net.ipv6.conf.all.disable_ipv6=1 net.ipv6.conf.default.disable_ipv6=1 \
+			net.ipv4.conf.all.rp_filter=0 net.ipv4.conf.default.rp_filter=0
 		ip -n "$ns" link set lo up
 	done
-	sysctls "$NS_A" net.ipv4.ip_forward=1 net.ipv4.conf.all.rp_filter=0 \
-		net.ipv4.conf.default.rp_filter=0
+	# The router asks ARP with its own interface address (as routers do),
+	# not with the client address on its loopback.
+	sysctls "$NS_A" net.ipv4.ip_forward=1 net.ipv4.conf.all.arp_announce=2 \
+		net.ipv4.conf.default.arp_announce=2
 
 	ip link add "$VA" netns "$NS_A" address "$MAC_A" type veth \
 		peer name "$VB" netns "$NS_B" address "$MAC_B"
