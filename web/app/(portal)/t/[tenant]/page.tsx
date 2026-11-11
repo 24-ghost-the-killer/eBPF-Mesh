@@ -13,7 +13,8 @@ import { Table, Td, Th } from "@/components/ui/table";
 import { useApi } from "@/components/use-api";
 import { useLive } from "@/components/use-live";
 import { api, unwrap } from "@/lib/api/client";
-import { bps, pps } from "@/lib/format";
+import { bps, dateTime, pps, vectorName } from "@/lib/format";
+import { Alert } from "@/components/ui/alert";
 
 function Stat({ label, value, sub, testid }: { label: string; value: string; sub: string; testid: string }) {
   return (
@@ -48,6 +49,21 @@ export default function Overview() {
           </Badge>
         }
       />
+      {live.last && live.last.attacks.length > 0 && (
+        <section aria-label="Active attacks" className="mb-6 grid gap-3">
+          {live.last.attacks.map((a) => (
+            <Alert key={a.id} tone="danger" className="flex flex-wrap items-center justify-between gap-3" data-testid="active-attack">
+              <span>
+                <strong>{vectorName(a.vector)} in progress</strong> since {dateTime(a.started_at)}: {pps(a.pps)} now, peak{" "}
+                {pps(a.peak_pps)}, {Math.round(a.dropped_ratio * 100)}% dropped at the PoPs.
+              </span>
+              <Link className="font-medium underline" href={`/t/${t.id}/attacks/${a.id}`}>
+                Details
+              </Link>
+            </Alert>
+          ))}
+        </section>
+      )}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <Stat label="Inbound" testid="rate-in" value={r ? pps(r.in_pps) : "–"} sub={r ? bps(r.in_bps) : ""} />
         <Stat label={observe ? "Clean" : "Delivered"} testid="rate-clean" value={r ? pps(r.clean_pps) : "–"} sub={r ? bps(r.clean_bps) : ""} />

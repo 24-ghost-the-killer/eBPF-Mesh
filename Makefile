@@ -20,6 +20,7 @@ CTL        := $(TARGET_DIR)/debug/sentinelctl
 GEN        := $(TARGET_DIR)/debug/sentinel-gen
 AGENT      := $(TARGET_DIR)/debug/sentinel-agent
 API        := $(TARGET_DIR)/debug/sentinel-api
+WORKER     := $(TARGET_DIR)/debug/sentinel-worker
 PASS_OBJ   := $(BUILD)/tests/xdp_pass.o
 TEST_XDP   := $(BUILD)/tests/test_xdp
 UNAME_S    := $(shell uname -s)
@@ -79,15 +80,15 @@ $(PASS_OBJ): tests/integration/xdp_pass.c
 	@mkdir -p $(@D)
 	clang -target bpf -O2 -g -Wall -Werror -I/usr/include/$$(uname -m)-linux-gnu -c $< -o $@
 
-INTEGRATION_TESTS := veth_counts tunnel policy_live synflood agent_kv api_e2e
+INTEGRATION_TESTS := veth_counts tunnel policy_live synflood agent_kv decisions api_e2e
 
 # Does not build the Rust binaries: under sudo, cargo is usually not on PATH.
 test-integration: bpf $(PASS_OBJ)
-	@for b in "$(CTL)" "$(GEN)" "$(AGENT)" "$(API)"; do test -x "$$b" || { echo "missing $$b: run 'make rust' first (as your normal user)"; exit 1; }; done
+	@for b in "$(CTL)" "$(GEN)" "$(AGENT)" "$(API)" "$(WORKER)"; do test -x "$$b" || { echo "missing $$b: run 'make rust' first (as your normal user)"; exit 1; }; done
 	@set -e; for t in $(INTEGRATION_TESTS); do \
 		echo "# integration: $$t"; \
 		CTL="$(abspath $(CTL))" GEN="$(abspath $(GEN))" AGENT="$(abspath $(AGENT))" \
-		API="$(abspath $(API))" PGSH="$(abspath tests/api/pg.sh)" \
+		API="$(abspath $(API))" WORKER="$(abspath $(WORKER))" PGSH="$(abspath tests/api/pg.sh)" \
 		RENDER="$(abspath deploy/nats/render-config.py)" BPF_OBJ="$(abspath $(BPF_OBJ))" \
 		PASS_OBJ="$(abspath $(PASS_OBJ))" tests/integration/$$t.sh; \
 	done
@@ -103,9 +104,9 @@ test-web: web-install
 
 # Playwright against the full lab (root: namespaces, XDP). Needs node + pnpm.
 test-e2e: bpf $(PASS_OBJ)
-	@for b in "$(CTL)" "$(GEN)" "$(AGENT)" "$(API)"; do test -x "$$b" || { echo "missing $$b: run 'make rust' first (as your normal user)"; exit 1; }; done
+	@for b in "$(CTL)" "$(GEN)" "$(AGENT)" "$(API)" "$(WORKER)"; do test -x "$$b" || { echo "missing $$b: run 'make rust' first (as your normal user)"; exit 1; }; done
 	CTL="$(abspath $(CTL))" GEN="$(abspath $(GEN))" AGENT="$(abspath $(AGENT))" \
-	API="$(abspath $(API))" PGSH="$(abspath tests/api/pg.sh)" \
+	API="$(abspath $(API))" WORKER="$(abspath $(WORKER))" PGSH="$(abspath tests/api/pg.sh)" \
 	RENDER="$(abspath deploy/nats/render-config.py)" BPF_OBJ="$(abspath $(BPF_OBJ))" \
 	PASS_OBJ="$(abspath $(PASS_OBJ))" tests/integration/portal_e2e.sh
 

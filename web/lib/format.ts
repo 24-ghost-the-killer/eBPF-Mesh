@@ -43,3 +43,23 @@ export function expiresIn(ms: number | null | undefined, now = Date.now()): stri
 export function hostOf(prefix: string): string {
   return prefix.replace(/\/(32|128)$/, "");
 }
+
+/** "3 min 12 s", "1 h 5 min", "45 s". */
+export function duration(fromMs: number, toMs: number): string {
+  const s = Math.max(0, Math.round((toMs - fromMs) / 1000));
+  if (s < 60) return `${s} s`;
+  if (s < 3600) return `${Math.floor(s / 60)} min ${s % 60} s`;
+  return `${Math.floor(s / 3600)} h ${Math.floor((s % 3600) / 60)} min`;
+}
+
+const VECTORS: Record<string, string> = {
+  syn_flood: "SYN flood",
+  udp_flood: "UDP flood",
+  icmp_flood: "ICMP flood",
+  ack_flood: "ACK flood",
+  volumetric: "Volumetric",
+};
+
+export function vectorName(v: string): string {
+  return VECTORS[v] ?? v;
+}

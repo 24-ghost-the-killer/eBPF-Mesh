@@ -15,6 +15,10 @@ export type LiveFrame = Schemas["LiveFrame"];
 export type Rates = Schemas["Rates"];
 export type Passkey = Schemas["PasskeyView"];
 export type ApiErrorBody = Schemas["ErrorBody"];
+export type Attack = Schemas["AttackView"];
+export type AttackDetail = Schemas["AttackDetail"];
+export type ActiveAttack = Schemas["ActiveAttack"];
+export type Webhook = Schemas["WebhookView"];
 
 // The CSRF token comes with the login response and GET /me. It is kept in
 // sessionStorage so a reload during the 2FA step still has it (it is not a

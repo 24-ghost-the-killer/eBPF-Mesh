@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 import { describe, expect, it } from "vitest";
 import { safeNext } from "@/components/session";
-import { expiresIn, hostOf, si } from "@/lib/format";
+import { duration, expiresIn, hostOf, si, vectorName } from "@/lib/format";
 import { liveUrl, pushFrame, WINDOW } from "@/lib/live";
 import { checkRulePrefix, formatServices, isIPv4, isIPv6, parseServices } from "@/lib/validate";
 import { csp } from "@/proxy";
@@ -22,6 +22,14 @@ describe("format", () => {
     expect(expiresIn(now + 5 * 60_000, now)).toBe("in 5 min");
     expect(expiresIn(now + 3 * 3600_000, now)).toBe("in 3 h");
     expect(expiresIn(now + 7 * 86400_000, now)).toBe("in 7 days");
+  });
+  it("prints durations and vectors", () => {
+    expect(duration(0, 45_000)).toBe("45 s");
+    expect(duration(0, 192_000)).toBe("3 min 12 s");
+    expect(duration(0, 3_900_000)).toBe("1 h 5 min");
+    expect(duration(10, 0)).toBe("0 s");
+    expect(vectorName("udp_flood")).toBe("UDP flood");
+    expect(vectorName("new_kind")).toBe("new_kind");
   });
   it("strips host prefix lengths", () => {
     expect(hostOf("198.51.100.2/32")).toBe("198.51.100.2");
@@ -79,6 +87,7 @@ describe("live view", () => {
     },
     pops: [],
     verdicts: [],
+    attacks: [],
   });
   it("keeps a rolling window", () => {
     let s = pushFrame([], frame(1000, 5), "pps");

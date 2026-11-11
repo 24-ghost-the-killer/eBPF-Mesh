@@ -4,6 +4,27 @@
  */
 
 export interface paths {
+    "/api/v1/admin/decisions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Recent decisions from every issuer (workers and the API), newest first. */
+        get: operations["admin_decisions"];
+        put?: never;
+        /**
+         * Block a source everywhere now: a decision signed with the API's key and
+         *     published to every PoP. Always expires.
+         */
+        post: operations["create_decision"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/admin/killswitch": {
         parameters: {
             query?: never;
@@ -31,6 +52,40 @@ export interface paths {
         get: operations["admin_pops"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/signing-keys": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_signing_keys"];
+        put?: never;
+        /** Trust a worker's decisions (published to every PoP through KV). */
+        post: operations["add_signing_key"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/signing-keys/{issuer}/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Revoke an issuer: every PoP refuses its decisions from then on. */
+        post: operations["revoke_signing_key"];
         delete?: never;
         options?: never;
         head?: never;
@@ -486,6 +541,39 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/tenants/{tid}/attacks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Attacks, newest first. */
+        get: operations["list_attacks"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/tenants/{tid}/attacks/{aid}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_attack"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/tenants/{tid}/audit": {
         parameters: {
             query?: never;
@@ -589,14 +677,108 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/tenants/{tid}/webhooks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_webhooks"];
+        put?: never;
+        /**
+         * Notify a Discord or Slack channel, an HTTP endpoint (signed) or an email
+         *     address when attacks start and end.
+         */
+        post: operations["create_webhook"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/tenants/{tid}/webhooks/{wid}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["delete_webhook"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/tenants/{tid}/webhooks/{wid}/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Sends a test notification now. */
+        post: operations["test_webhook"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @description An attack in progress (spec 13.4: the overview shows them live). */
+        ActiveAttack: {
+            /** Format: double */
+            bps: number;
+            /**
+             * Format: double
+             * @description Share of the attack traffic the PoPs drop (0..1).
+             */
+            dropped_ratio: number;
+            /** Format: int64 */
+            id: number;
+            /** Format: double */
+            peak_pps: number;
+            /** Format: double */
+            pps: number;
+            /**
+             * Format: int64
+             * @description Unix ms.
+             */
+            started_at: number;
+            vector: string;
+        };
         AddMember: {
             email: string;
             /** @description owner, admin or viewer */
             role: string;
+        };
+        AdminDecision: {
+            action: string;
+            active: boolean;
+            /** Format: int64 */
+            expires_at: number;
+            id: string;
+            issuer: string;
+            reason: string;
+            src: string;
+            /**
+             * Format: int64
+             * @description null = global
+             */
+            tenant_id?: number | null;
+            /** Format: int64 */
+            ts: number;
+            /** Format: int32 */
+            ttl_s: number;
         };
         AdminPop: {
             /** Format: int64 */
@@ -649,6 +831,65 @@ export interface components {
             tenant_id: number;
             tunnel: string;
         };
+        AttackDetail: {
+            attack: components["schemas"]["AttackView"];
+            /** @description Blocks issued during the attack. */
+            decisions: components["schemas"]["DecisionView"][];
+            /** @description Rates over time (one sample per worker report). */
+            samples: components["schemas"]["AttackSample"][];
+            top_sources: components["schemas"]["SourceView"][];
+        };
+        AttackSample: {
+            /** Format: double */
+            bps: number;
+            /** Format: double */
+            dropped_ratio: number;
+            /** Format: double */
+            pps: number;
+            /** Format: int64 */
+            ts: number;
+        };
+        AttackView: {
+            /** Format: int64 */
+            asset_id?: number | null;
+            /** Format: double */
+            bps: number;
+            /**
+             * Format: int32
+             * @description Sources blocked by signed decisions.
+             */
+            decisions: number;
+            /**
+             * Format: double
+             * @description Share of the attack traffic dropped at the PoPs (0..1).
+             */
+            dropped_ratio: number;
+            /** Format: int64 */
+            ended_at?: number | null;
+            /** Format: int64 */
+            id: number;
+            /** Format: int64 */
+            peak_bps: number;
+            /** Format: int64 */
+            peak_pps: number;
+            pops: string[];
+            /**
+             * Format: double
+             * @description Latest rates (0 once ended).
+             */
+            pps: number;
+            /**
+             * Format: int64
+             * @description Unix ms.
+             */
+            started_at: number;
+            /** @description active or ended */
+            status: string;
+            /** @description Most targeted protected IPs. */
+            targets: string[];
+            /** @description syn_flood, udp_flood, icmp_flood, ack_flood, volumetric */
+            vector: string;
+        };
         AuditView: {
             action: string;
             /** Format: int64 */
@@ -689,6 +930,30 @@ export interface components {
              */
             ttl_seconds?: number | null;
         };
+        CreateWebhook: {
+            kind: string;
+            name?: string;
+            /** @description URL (discord, slack, http) or email address. */
+            target: string;
+        };
+        CreatedWebhook: {
+            /** @description HTTP webhooks only, shown once: verify X-Sentinel-Signature with it. */
+            secret?: string | null;
+            webhook: components["schemas"]["WebhookView"];
+        };
+        DecisionView: {
+            /** Format: int64 */
+            expires_at: number;
+            id: string;
+            issuer: string;
+            reason: string;
+            /** @description Blocked source prefix. */
+            src: string;
+            /** Format: int64 */
+            ts: number;
+            /** Format: int32 */
+            ttl_s: number;
+        };
         EmailReq: {
             email: string;
         };
@@ -718,6 +983,8 @@ export interface components {
         };
         /** @description One WebSocket message (JSON text frame), once per second. */
         LiveFrame: {
+            /** @description Attacks in progress. */
+            attacks: components["schemas"]["ActiveAttack"][];
             /** @description One entry per PoP that reported in the last 5 seconds. */
             pops: components["schemas"]["PopRates"][];
             total: components["schemas"]["Rates"];
@@ -756,12 +1023,31 @@ export interface components {
             /** Format: int64 */
             user_id: number;
         };
+        NewDecision: {
+            /** @description Lower-case word, e.g. "manual" or "abuse_report". */
+            reason: string;
+            /** @description Source address or prefix to block. */
+            src: string;
+            /**
+             * Format: int32
+             * @description 0 = every tenant (global block).
+             */
+            tenant: number;
+            /** Format: int32 */
+            ttl_s: number;
+        };
         NewKey: {
             /** Format: int64 */
             id: number;
             /** @description Shown once; only its hash is stored. */
             key: string;
             scopes: string[];
+        };
+        NewSigningKey: {
+            /** @description Worker or PoP name (a-z, 0-9, '-'). */
+            issuer: string;
+            /** @description Base64 Ed25519 public key (`sentinel-worker key generate`). */
+            public_key: string;
         };
         PasskeyView: {
             /** Format: int64 */
@@ -884,11 +1170,26 @@ export interface components {
             /** @description "tcp", "udp", "icmp", "icmpv6" or a protocol number. */
             proto: string;
         };
+        SigningKeyView: {
+            /** Format: int64 */
+            created_at: number;
+            issuer: string;
+            /** @description Base64 Ed25519 public key. */
+            public_key: string;
+            revoked: boolean;
+            /** Format: int64 */
+            revoked_at?: number | null;
+        };
         SignupReq: {
             email: string;
             password: string;
             /** @description Name of the customer account (tenant) created with the user. */
             tenant_name: string;
+        };
+        SourceView: {
+            /** Format: double */
+            pps: number;
+            src: string;
         };
         StatusResp: {
             status: string;
@@ -944,6 +1245,24 @@ export interface components {
             pps: number;
             verdict: string;
         };
+        WebhookTestResult: {
+            ok: boolean;
+            /** @description "HTTP 200", "sent", or the error. */
+            status: string;
+        };
+        WebhookView: {
+            /** Format: int64 */
+            created_at: number;
+            /** Format: int64 */
+            id: number;
+            /** @description discord, slack, http or email */
+            kind: string;
+            /** Format: int64 */
+            last_at?: number | null;
+            last_status?: string | null;
+            name: string;
+            target: string;
+        };
     };
     responses: never;
     parameters: never;
@@ -953,6 +1272,80 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    admin_decisions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminDecision"][];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    create_decision: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NewDecision"];
+            };
+        };
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminDecision"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     killswitch: {
         parameters: {
             query?: never;
@@ -1002,6 +1395,105 @@ export interface operations {
                 };
             };
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    list_signing_keys: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SigningKeyView"][];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    add_signing_key: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NewSigningKey"];
+            };
+        };
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    revoke_signing_key: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                issuer: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1964,6 +2456,68 @@ export interface operations {
             };
         };
     };
+    list_attacks: {
+        parameters: {
+            query?: {
+                /** @description 1-200, default 50 */
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                tid: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AttackView"][];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    get_attack: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tid: number;
+                aid: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AttackDetail"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     audit_log: {
         parameters: {
             query?: {
@@ -2199,6 +2753,142 @@ export interface operations {
                 };
             };
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    list_webhooks: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tid: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebhookView"][];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    create_webhook: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tid: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateWebhook"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreatedWebhook"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    delete_webhook: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tid: number;
+                wid: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    test_webhook: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tid: number;
+                wid: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebhookTestResult"];
+                };
+            };
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

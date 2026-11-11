@@ -6,6 +6,8 @@ import QRCode from "qrcode";
 import { useState } from "react";
 import { PageHeader } from "@/components/portal-shell";
 import { useSession } from "@/components/session";
+import { atLeast, useTenant } from "@/components/tenant";
+import { Webhooks } from "@/components/webhooks";
 import { Empty, QueryView } from "@/components/states";
 import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -170,9 +172,10 @@ function Passkeys({ onChange }: { onChange: () => Promise<void> }) {
 
 export default function SettingsPage() {
   const { me, refresh } = useSession();
+  const t = useTenant();
   return (
     <>
-      <PageHeader title="Settings" description="Your sign-in and two-factor authentication." />
+      <PageHeader title="Settings" description="Your sign-in, two-factor authentication and notifications." />
       <div className="grid gap-6">
         <Card>
           <CardHeader>
@@ -203,6 +206,17 @@ export default function SettingsPage() {
             <Totp onChange={refresh} />
           </CardContent>
         </Card>
+        {atLeast(t.role, "admin") && (
+          <Card>
+            <CardHeader>
+              <CardTitle>Attack notifications</CardTitle>
+              <CardDescription>Discord, Slack, a signed HTTP webhook or email when an attack starts and ends.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Webhooks />
+            </CardContent>
+          </Card>
+        )}
         <p className="text-sm text-muted-fg">Signed in as {me.user.email}.</p>
       </div>
     </>

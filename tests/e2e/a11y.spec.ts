@@ -32,7 +32,7 @@ for (const scheme of ["light", "dark"] as const) {
     const asset = page.url().replace(/\?.*$/, "");
     await expect(page.getByTestId("code-block")).toBeVisible();
     await audit(page, "asset");
-    for (const path of [`/t/${t}`, `/t/${t}/assets`, `/t/${t}/assets/new`, `/t/${t}/rules`, `/t/${t}/settings`]) {
+    for (const path of [`/t/${t}`, `/t/${t}/assets`, `/t/${t}/assets/new`, `/t/${t}/attacks`, `/t/${t}/rules`, `/t/${t}/settings`]) {
       await page.goto(path);
       await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
       await audit(page, path);

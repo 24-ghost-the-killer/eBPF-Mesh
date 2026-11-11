@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 "use client";
-import { Activity, ListFilter, LogOut, Server, Settings, Shield } from "lucide-react";
+import { Activity, ListFilter, LogOut, Server, Settings, Shield, Siren } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { api, setCsrf } from "@/lib/api/client";
@@ -31,6 +31,7 @@ export function PortalShell({ tenantParam, children }: { tenantParam: string; ch
   const nav = [
     { href: base, label: "Overview", icon: Activity, exact: true },
     { href: `${base}/assets`, label: "Protected IPs", icon: Server },
+    { href: `${base}/attacks`, label: "Attacks", icon: Siren },
     { href: `${base}/rules`, label: "Rules", icon: ListFilter },
     { href: `${base}/settings`, label: "Settings", icon: Settings },
   ];

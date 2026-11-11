@@ -80,3 +80,19 @@ describe("states", () => {
     expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
   });
 });
+
+describe("attack badges", () => {
+  it("shows status and mitigation", async () => {
+    const { AttackStatus, Mitigation } = await import("@/components/attack-badge");
+    render(
+      <>
+        <AttackStatus status="active" />
+        <AttackStatus status="ended" />
+        <Mitigation ratio={0.624} />
+      </>,
+    );
+    expect(screen.getByTestId("attack-active").textContent).toBe("Under attack");
+    expect(screen.getByText("Ended")).toBeTruthy();
+    expect(screen.getByText("62% dropped")).toBeTruthy();
+  });
+});
