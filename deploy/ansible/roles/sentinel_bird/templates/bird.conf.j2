@@ -1,0 +1,66 @@
+# {{ ansible_managed }}
+# Sentinel-Edge PoP {{ pop_id }} (spec 11.2, ADR 0023, ADR 0026).
+include "{{ bird_conf_dir }}/drain.conf";    # define DRAIN = 0|1 (sentinel-agent)
+include "{{ bird_conf_dir }}/export.conf";   # define EXPORT = 0|1 (Ansible: go-live switch)
+router id {{ bgp_router_id }};
+log syslog all;
+
+protocol device {}
+
+{% set v4 = sentinel_prefixes | reject('search', ':') | list %}
+{% set v6 = sentinel_prefixes | select('search', ':') | list %}
+{% if v4 %}
+protocol static anycast4 {
+  ipv4;
+{% for p in v4 %}
+  route {{ p }} blackhole;
+{% endfor %}
+}
+{% endif %}
+{% if v6 %}
+protocol static anycast6 {
+  ipv6;
+{% for p in v6 %}
+  route {{ p }} blackhole;
+{% endfor %}
+}
+{% endif %}
+
+# Only our own prefixes, only from the anycast static protocols, and only
+# once EXPORT = 1. Anything else (a leaked route, a typo) is never announced.
+define OWN4 = [ {{ v4 | join(', ') or '0.0.0.0/32' }} ];
+define OWN6 = [ {{ v6 | join(', ') or '::/128' }} ];
+
+filter export_anycast {
+  if EXPORT != 1 then reject;
+  if !(proto = "anycast4" || proto = "anycast6") then reject;
+  if net.type = NET_IP4 && !(net ~ OWN4) then reject;
+  if net.type = NET_IP6 && !(net ~ OWN6) then reject;
+  if DRAIN = 1 then { bgp_path.prepend({{ sentinel_asn }}); bgp_path.prepend({{ sentinel_asn }}); }
+  accept;
+}
+
+filter import_upstream {
+{% if bgp_accept_default %}
+  if net = 0.0.0.0/0 || net = ::/0 then accept;
+{% endif %}
+  reject;
+}
+
+{% for u in bgp_upstreams %}
+protocol bgp {{ u.name }} {
+  local as {{ sentinel_asn }};
+  neighbor {{ u.neighbor }} as {{ u.asn }};
+  hold time {{ bgp_hold_time }};
+  keepalive time {{ bgp_keepalive_time }};
+{% if (u.neighbor | string) is search(':') %}
+  ipv6 {
+{% else %}
+  ipv4 {
+{% endif %}
+    import limit {{ u.max_prefix }} action disable;
+    import filter import_upstream;
+    export filter export_anycast;
+  };
+}
+{% endfor %}

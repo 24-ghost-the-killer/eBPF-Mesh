@@ -1,0 +1,32 @@
+# {{ ansible_managed }}
+[pop]
+id = "{{ pop_id }}"
+region = "{{ pop_region }}"
+iface = "{{ pop_uplink_iface }}"
+pop_ip4 = "{{ pop_ip4 }}"
+tunnel_ep4 = "{{ sentinel_tunnel_ep4 }}"
+{% if pop_nexthop_mac is defined %}
+nexthop_mac = "{{ pop_nexthop_mac }}"
+{% endif %}
+
+[xdp]
+object = "/usr/lib/sentinel/xdp_main.o"
+pin_dir = "/sys/fs/bpf/sentinel"
+mode = "{{ 'generic' if (agent_allow_generic_xdp | bool and pop_driver not in xdp_native_drivers) else 'native' }}"
+allow_generic = {{ agent_allow_generic_xdp | bool | lower }}
+
+[nats]
+url = "{{ nats_url }}"
+ca = "/etc/sentinel/nats-ca.pem"
+nkey_seed_file = "/etc/sentinel/{{ pop_id }}.nk"
+
+[telemetry]
+shards = {{ telemetry_shards }}
+sample_base = {{ telemetry_sample_base }}
+
+[agent]
+heartbeat_file = "/run/sentinel/heartbeat"
+metrics_listen = "{{ agent_metrics_listen }}"
+
+[bird]
+drain_file = "{{ bird_conf_dir | default('/etc/bird') }}/drain.conf"

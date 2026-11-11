@@ -1,0 +1,79 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Refuse dangerous configurations before touching the host.
+- name: Required variables are set
+  ansible.builtin.assert:
+    that:
+      - sentinel_asn is defined
+      - sentinel_prefixes | length > 0
+      - pop_id is defined and pop_id is match('^[a-z0-9-]{1,32}$')
+      - pop_uplink_iface is defined
+      - pop_ip4 is defined
+      - bgp_router_id is defined
+      - bgp_upstreams | length > 0
+      - mgmt_cidrs | length > 0
+      - sentinel_nats_nkey_seed is defined
+    fail_msg: "missing or invalid PoP variables (see inventories/example)"
+    quiet: true
+
+- name: Prefixes are valid networks
+  ansible.builtin.assert:
+    that: item | sentinel_valid_prefix
+    fail_msg: "{{ item }} is not a network address (host bits set?)"
+    quiet: true
+  loop: "{{ sentinel_prefixes }}"
+
+- name: Lab mode uses lab resources only
+  when: sentinel_lab_mode | bool
+  ansible.builtin.assert:
+    that:
+      - sentinel_prefixes | map('sentinel_lab_prefix') | min
+      - sentinel_asn | sentinel_private_asn
+    fail_msg: "lab mode: only documentation/private prefixes and private ASNs (spec section 1)"
+    quiet: true
+
+- name: Production uses real resources only
+  when: not (sentinel_lab_mode | bool)
+  ansible.builtin.assert:
+    that:
+      - not (sentinel_prefixes | map('sentinel_lab_prefix') | max)
+      - not (sentinel_asn | sentinel_private_asn)
+      - sentinel_prefixes | map('sentinel_announceable') | min
+    fail_msg: >-
+      production: no documentation/private prefixes, no private ASN, and only
+      prefixes the internet accepts (IPv4 /24 or shorter, IPv6 /48 or shorter)
+    quiet: true
+
+- name: Every upstream has an import limit and a peer ASN
+  ansible.builtin.assert:
+    that:
+      - item.max_prefix | int > 0
+      - item.asn | int > 0
+      - item.neighbor is defined
+    fail_msg: "upstream {{ item.name | default('?') }} needs neighbor, asn and max_prefix"
+    quiet: true
+  loop: "{{ bgp_upstreams }}"
+
+- name: The PoP's own address is not inside an announced prefix
+  ansible.builtin.assert:
+    that: not (pop_ip4 | sentinel_ip_in_any(sentinel_prefixes))
+    quiet: true
+
+- name: The control host stays inside the management networks (no SSH lock-out)
+  ansible.builtin.assert:
+    that: (ansible_env.SSH_CONNECTION | default('') | split(' ') | first) | sentinel_ip_in_any(mgmt_cidrs)
+    fail_msg: >-
+      this Ansible connection comes from {{ ansible_env.SSH_CONNECTION | default('?') | split(' ') | first }},
+      which is not in mgmt_cidrs: the firewall would lock you out
+    quiet: true
+
+- name: Kernel supports native XDP with bpf_link (6.x)
+  ansible.builtin.assert:
+    that: ansible_kernel is version('6.0', '>=')
+    fail_msg: "kernel {{ ansible_kernel }} is too old (need 6.x)"
+    quiet: true
+
+- name: Uplink interface exists
+  ansible.builtin.assert:
+    that: pop_uplink_iface in ansible_interfaces
+    fail_msg: "no interface {{ pop_uplink_iface }}"
+    quiet: true

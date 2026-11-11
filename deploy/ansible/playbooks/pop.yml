@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Provision PoP servers: guard rails, firewall, BIRD, agent, health check.
+#   ansible-playbook -i inventories/<site>/hosts.yml playbooks/pop.yml
+- name: Sentinel-Edge PoP
+  hosts: pops
+  become: true
+  roles:
+    - sentinel_preflight
+    - sentinel_firewall
+    - sentinel_bird
+    - sentinel_agent
+    - sentinel_health

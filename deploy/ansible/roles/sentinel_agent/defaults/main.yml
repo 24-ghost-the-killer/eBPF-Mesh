@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+agent_metrics_listen: "{{ ansible_host }}:9466"   # management address; the firewall limits it to Prometheus
+telemetry_shards: 16
+telemetry_sample_base: 1
+agent_allow_generic_xdp: false
+# Drivers with native XDP; anything else needs agent_allow_generic_xdp (labs).
+xdp_native_drivers: [mlx5_core, mlx4_en, ice, i40e, ixgbe, igb, igc, bnxt_en, virtio_net, veth, ena, gve, nfp, qede, sfc, tun]

@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Runs ansible-playbook against the stand-in PoP (Debian's ansible-core); also
+# serves as the BGP "upstream" (bird2).
+FROM debian:trixie
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ansible-core openssh-client python3 curl netcat-openbsd bird2 openssl \
+    && rm -rf /var/lib/apt/lists/*
+CMD ["sleep", "infinity"]

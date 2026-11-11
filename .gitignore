@@ -16,3 +16,6 @@ node_modules/
 /lab/clab-sentinel/
 /lab/.topology.clab.yml.bak
 /status-page/config.js
+/deploy/compose/state/
+/deploy/ansible/inventories/*
+!/deploy/ansible/inventories/example/

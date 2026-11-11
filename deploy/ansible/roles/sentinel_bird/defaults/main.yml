@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+bird_conf_dir: /etc/bird
+bird_socket: /run/bird/bird.ctl
+bgp_hold_time: 9
+bgp_keepalive_time: 3
+# Learn only a default route from upstreams (egress uses the OS routing).
+bgp_accept_default: true
