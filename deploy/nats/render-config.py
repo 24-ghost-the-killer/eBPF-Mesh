@@ -5,7 +5,8 @@
 One account, one user per component, each identified by an nkey and allowed
 to publish/subscribe only to its own subjects:
 
-  admin      everything (operators; the API gets its own user in phase 5)
+  admin      everything (operators)
+  api        write the KV buckets; read config.ack.>, health.>, stats.>
   pop <id>   publish  telemetry.<id>.>, stats.<id>, health.<id>, config.ack.<id>
              read     the KV buckets tenants, services, rules, platform
              subscribe decision.global
@@ -15,7 +16,7 @@ TLS is mandatory; JetStream stores the KV buckets.
 
 Usage:
   render-config.py --listen 127.0.0.1:4222 --cert server.pem --key server.key \\
-      --store /var/lib/nats --admin UADMIN... --pop lab1=UPOP1... [--pop ...]
+      --store /var/lib/nats --admin UADMIN... [--api UAPI...] --pop lab1=UPOP1... [--pop ...]
 The output is JSON, which nats-server accepts as configuration.
 """
 import argparse
@@ -47,6 +48,20 @@ def kv_read_permissions():
     return subjects
 
 
+def api_user(nkey):
+    """The control-plane API: writes KV, reads what the agents publish."""
+    publish = ["$JS.API.INFO"]
+    for b in KV_BUCKETS:
+        publish += [f"$KV.{b}.>", f"$JS.API.STREAM.INFO.KV_{b}", f"$JS.API.STREAM.MSG.GET.KV_{b}"]
+    return {
+        "nkey": nkey,
+        "permissions": {
+            "publish": {"allow": publish},
+            "subscribe": {"allow": ["config.ack.>", "health.>", "stats.>", "_INBOX.>"]},
+        },
+    }
+
+
 def pop_user(pop, nkey):
     return {
         "nkey": nkey,
@@ -73,6 +88,7 @@ def main():
     p.add_argument("--key", required=True)
     p.add_argument("--store", required=True)
     p.add_argument("--admin", required=True, help="admin user's public nkey")
+    p.add_argument("--api", help="the API's public nkey")
     p.add_argument("--pop", action="append", default=[], metavar="ID=NKEY")
     a = p.parse_args()
 
@@ -81,6 +97,10 @@ def main():
         if not NKEY.match(nk):
             sys.exit(f"render-config: not a user nkey: {nk!r}")
         users.append({"nkey": nk})
+    if a.api:
+        if not NKEY.match(a.api):
+            sys.exit(f"render-config: not a user nkey: {a.api!r}")
+        users.append(api_user(a.api))
     for spec in a.pop:
         pop, _, nk = spec.partition("=")
         if not POP_ID.match(pop) or not NKEY.match(nk):

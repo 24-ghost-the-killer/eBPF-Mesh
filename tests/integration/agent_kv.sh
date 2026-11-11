@@ -8,94 +8,17 @@
 # permissions) runs on the PoP namespace's loopback; the agent attaches XDP,
 # applies the KV buckets and publishes acks, stats, telemetry and health.
 #
-# Env (besides lib.sh): AGENT (sentinel-agent binary), RENDER (render-config.py).
+# Env: see lib.sh and nats_lab.sh.
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
-: "${AGENT:?set AGENT}" "${RENDER:?set RENDER}"
-for tool in nats nats-server openssl; do
-	command -v "$tool" >/dev/null || { echo "missing $tool" >&2; exit 1; }
-done
+source "$(dirname "$0")/nats_lab.sh"
 
-N="$WORK/nats"
-URL=tls://127.0.0.1:4222
-mkdir -p "$N"
-natsc() { # natsc <seed file> args...: nats CLI in the PoP namespace
-	local seed=$1
-	shift
-	inb nats --server "$URL" --tlsca "$N/ca.pem" --nkey "$seed" "$@"
-}
-admin() { natsc "$N/admin.nk" "$@"; }
-now_ms() { date +%s%3N; }
-
-# ---- NATS: CA, server cert, nkeys, config, buckets -----------------------------
-openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 2 \
-	-keyout "$N/ca.key" -out "$N/ca.pem" -subj "/CN=sentinel-lab-ca" 2>/dev/null
-openssl req -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
-	-keyout "$N/server.key" -out "$N/server.csr" -subj "/CN=nats" 2>/dev/null
-printf 'subjectAltName=IP:127.0.0.1,DNS:localhost\n' >"$N/san.ext"
-openssl x509 -req -in "$N/server.csr" -CA "$N/ca.pem" -CAkey "$N/ca.key" -CAcreateserial \
-	-days 2 -extfile "$N/san.ext" -out "$N/server.pem" 2>/dev/null
-ADMIN_PUB=$("$AGENT" nkey generate --out "$N/admin.nk")
-POP_PUB=$("$AGENT" nkey generate --out "$N/lab1.nk")
-LAB2_PUB=$("$AGENT" nkey generate --out "$N/lab2.nk")
-python3 "$RENDER" --listen 127.0.0.1:4222 --cert "$N/server.pem" --key "$N/server.key" \
-	--store "$N/js" --admin "$ADMIN_PUB" --pop "lab1=$POP_PUB" --pop "lab2=$LAB2_PUB" \
-	>"$N/server.json"
-
+nats_prepare
 lab_net
-# Background processes are started directly, not through a shell function:
-# otherwise $! is a subshell and signals never reach the process.
-ip netns exec "$NS_B" nats-server -c "$N/server.json" >"$N/server.log" 2>&1 &
-BG_PIDS+=($!)
-for _ in $(seq 50); do inb ss -Hltn "sport = :4222" | grep -q . && break; sleep 0.1; done
-for b in tenants services rules platform; do
-	admin kv add "$b" --history 5 >/dev/null
-done
+nats_start
 pass "NATS up with TLS, nkeys and the four KV buckets"
-
-# Subscriptions that record what the agent publishes.
-for subj in config.ack.lab1 stats.lab1 health.lab1 'telemetry.lab1.>'; do
-	f="$N/sub-${subj%%.>}.log"
-	ip netns exec "$NS_B" nats --server "$URL" --tlsca "$N/ca.pem" --nkey "$N/admin.nk" \
-		sub "$subj" --raw >"$f" 2>&1 &
-	BG_PIDS+=($!)
-done
-sleep 0.5
-
-# ---- agent ---------------------------------------------------------------------
-cat >"$WORK/agent.toml" <<CFG
-[pop]
-id = "lab1"
-region = "lab"
-iface = "$VB"
-pop_ip4 = "$POP_IP"
-tunnel_ep4 = "$TUNNEL_EP"
-nexthop_mac = "$MAC_A"
-[xdp]
-object = "$BPF_OBJ"
-pin_dir = "$SENTINEL_PIN_DIR"
-[nats]
-url = "$URL"
-ca = "$N/ca.pem"
-nkey_seed_file = "$N/lab1.nk"
-[telemetry]
-shards = 4
-sample_base = 1
-target_events_per_sec = 100000
-[agent]
-heartbeat_file = "$WORK/heartbeat"
-metrics_listen = "127.0.0.1:9466"
-health_interval_s = 1
-gc_interval_s = 2
-CFG
-start_agent() {
-	# nsenter (not ip netns exec) keeps bpffs visible; it execs the agent,
-	# so $! is the agent's PID.
-	nsenter --net="/run/netns/$NS_B" "$AGENT" run --config "$WORK/agent.toml" \
-		>>"$WORK/agent.log" 2>&1 &
-	AGENT_PID=$!
-	BG_PIDS+=("$AGENT_PID")
-}
+nats_record config.ack.lab1 stats.lab1 health.lab1 'telemetry.lab1.>'
+agent_config
 start_agent
 wait_for "$N/sub-health.lab1.log" '"xdp_attached":true' 10 \
 	&& pass "agent attached XDP and reports health" || { fail "no health"; cat "$WORK/agent.log"; }

@@ -68,8 +68,10 @@ ctl() { nsenter --net="/run/netns/$NS_B" "$CTL" "$@"; }
 gen() { ina "$GEN" "$@"; }
 
 BG_PIDS=()
+CLEANUP_CMDS=() # extra commands run at exit (e.g. stopping PostgreSQL)
 lab_down() {
 	set +e
+	for c in "${CLEANUP_CMDS[@]}"; do eval "$c"; done
 	[ -n "${HTTP_PID:-}" ] && kill "$HTTP_PID" 2>/dev/null
 	for pid in "${BG_PIDS[@]}"; do kill "$pid" 2>/dev/null; done
 	ctl detach --iface "$VB" >/dev/null 2>&1
