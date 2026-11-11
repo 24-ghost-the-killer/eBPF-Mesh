@@ -377,6 +377,9 @@ pub struct HealthMsg {
     pub v: u32,
     pub pop: String,
     pub region: String,
+    /// The PoP's unicast address (for the API's PoP list).
+    #[serde(default)]
+    pub pop_ip4: Option<Ipv4Addr>,
     pub ts: u64,
     pub iface: String,
     pub xdp_attached: bool,

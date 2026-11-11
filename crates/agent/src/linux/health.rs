@@ -35,6 +35,7 @@ pub async fn run(sh: Arc<Shared>) {
             v: SCHEMA_V,
             pop: sh.pop().to_string(),
             region: sh.cfg.pop.region.clone(),
+            pop_ip4: Some(sh.cfg.pop.pop_ip4),
             ts: now_unix_ms(),
             iface: sh.cfg.pop.iface.clone(),
             xdp_attached: attached,
