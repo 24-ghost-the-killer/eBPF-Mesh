@@ -18,9 +18,9 @@ ASNs. Nothing here is meant to touch the real internet yet.
 | 3 | Tenants and IPIP tunnel delivery, return path, customer script, MTU/MSS | done |
 | 4 | PoP agent and NATS: KV config with acks, stats, telemetry, health | done |
 | 5 | Control-plane API and PostgreSQL: auth, 2FA, roles, RLS, assets, policy, rules, audit | done |
-| 6 | Portal v1: login, 2FA with passkeys, live overview, protected IPs with tunnel script/test, rules | **done** |
-| 7 | Analysis workers and signed decisions | next |
-| 8 | Anycast lab (containerlab + BIRD) | |
+| 6 | Portal v1: login, 2FA with passkeys, live overview, protected IPs with tunnel script/test, rules | done |
+| 7 | Analysis workers: detection, signed decisions, attacks pages, webhooks | **done** |
+| 8 | Anycast lab (containerlab + BIRD) | next |
 | 9 | Public website | |
 
 ## What exists today
@@ -63,6 +63,18 @@ ASNs. Nothing here is meant to touch the real internet yet.
   OpenAPI at `/api/v1/openapi.json` (snapshot in `docs/openapi.json`)
   ([ADR 0016](docs/adr/0016-api-sessions-rls-outbox.md),
   [ADR 0017](docs/adr/0017-api-shape.md)).
+- **`sentinel-worker`** (analysis): per-tenant baselines (EWMA) over exact
+  volume from `stats.<pop>` and traffic shape from its telemetry shards;
+  detects attacks (two signals high for a few seconds, hysteresis to end),
+  classifies the vector, blocks the largest sources of its shards with
+  Ed25519-signed, expiring decisions (never allowlisted ones), and reports
+  `attack.<tenant>`. The agent verifies every decision (trusted unrevoked
+  key from the `keys` KV bucket, signature, 60 s window, replay) before
+  writing it to `xs_block`. The API merges workers' reports into attacks,
+  records verified decisions, notifies webhooks (Discord, Slack, signed
+  HTTP, email; SSRF-protected) and lets platform admins sign their own
+  decisions ([ADR 0021](docs/adr/0021-detection-and-signed-decisions.md),
+  [ADR 0022](docs/adr/0022-webhooks.md)).
 - **Portal** (`web/`, Next.js + Tailwind + shadcn/ui-style components +
   Recharts): signup, email verification, login, password reset, 2FA with
   passkeys or an authenticator app; an overview with a live graph over
@@ -70,7 +82,9 @@ ASNs. Nothing here is meant to touch the real internet yet.
   wizard, the tunnel script (copy/download), "Active on X of Y PoPs" and a
   **tunnel test** run by every PoP through the real tunnel; a rules page with
   observe/mitigate, allowed services, rate limits, SYN cookies and
-  allow/block lists. Client generated from the OpenAPI document; one origin
+  allow/block lists; attacks list and detail (graph, top sources, blocked
+  sources), active attacks on the overview, attack notifications. Client
+  generated from the OpenAPI document; one origin
   with the API; CSP with nonces and the other security headers; keyboard
   accessible, responsive, dark and light
   ([ADR 0018](docs/adr/0018-portal-architecture.md),
@@ -88,11 +102,21 @@ ASNs. Nothing here is meant to touch the real internet yet.
 - **Tests**: 284 `BPF_PROG_TEST_RUN` checks (verdicts, exact counters, exact
   output bytes for SYN challenges, tunnel encapsulation, the return path with
   MSS clamping, sampled events), 6 veth/netns suites with real traffic
-  (111 checks), 89 Rust tests including 6 API integration tests against a
-  real PostgreSQL, 19 Vitest tests, 7 Playwright browser tests against the
-  full lab, CI.
+  (7 suites), Rust unit tests and API integration tests against a real
+  PostgreSQL, Vitest, Playwright browser tests against the full lab, CI.
 
 Acceptance tests:
+- phase 7 (`tests/e2e/attack.spec.ts`): after a customer's normal setup
+  (passkey, webhook, protected IP, tunnel, mitigate), a UDP flood from 8 lab
+  bots is detected by the worker within seconds; signed decisions block the
+  bots at the PoP (thousands of `drop_block`), the customer's server stops
+  receiving the flood while HTTP keeps working, the overview and attack
+  pages show it with the blocked sources, the webhook receives signed
+  `attack.started`/`attack.ended`, and the attack ends on its own, with no
+  manual action. `tests/integration/decisions.sh`: the PoP refuses unknown,
+  revoked, stale, replayed, tampered and invalid decisions, honours the
+  allowlist, keeps decision blocks across KV reconciles, expires them in
+  XDP, and PoPs cannot publish decisions.
 - phase 6 (`tests/e2e/onboarding.spec.ts`, run by
   `tests/integration/portal_e2e.sh` against the full lab): in Chromium, a
   customer signs up, verifies the email, adds a passkey, protects a server,
@@ -169,7 +193,7 @@ crates/agent              sentinel-agent (PoP agent)
 crates/api                sentinel-api (control-plane API) + its integration tests
 web/                      Next.js portal (app/, components/, lib/api generated client)
 crates/gen                sentinel-gen (lab traffic generator)
-crates/worker             placeholder for phase 7
+crates/worker             sentinel-worker (attack detection, signed decisions)
 migrations/postgres       schema + Row Level Security
 tests/bpf                 BPF_PROG_TEST_RUN harness, parser and policy suites
 tests/api                 throwaway PostgreSQL for the API tests
@@ -182,7 +206,7 @@ configs/                  example agent and API configuration
 docs/                     architecture, runbook, ADRs
 ```
 
-## Known limitations (after phase 6)
+## Known limitations (after phase 7)
 
 - Packets that do not fit the uplink MTU after the 20-byte tunnel header are
   dropped (`drop_too_big`); ICMP "fragmentation needed"/"packet too big"
@@ -196,9 +220,12 @@ docs/                     architecture, runbook, ADRs
   `drop_unverified`.
 - An expired longer prefix shadows an active shorter one until `gc` runs
   ([ADR 0011](docs/adr/0011-expiry-and-fail-open.md)).
-- The portal has no attacks pages, webhooks, members/API-key/audit screens
-  or admin panel yet (attacks and webhooks: phase 7; admin: phase 8). The
-  API endpoints for members, API keys and the audit log exist.
+- The portal has no members/API-key/audit screens or admin panel yet (admin:
+  phase 8); the API endpoints exist (also for decisions and signing keys).
+- Detection is statistical (no ML). Only block decisions exist (no per-source
+  rate-limit decisions). With several workers, the SYN-rate and new-source
+  signals are per worker (volume is exact). Spoofed floods are left to SYN
+  cookies and rate limits.
 - The overview graph is live only (last two minutes); history from
   ClickHouse (`traffic_1m`) comes with phase 8. Live frames come from the
   PoPs' exact per-tenant counters (`stats.<pop>`), at most 5 s old.
@@ -207,8 +234,7 @@ docs/                     architecture, runbook, ADRs
 - `web/scripts/edge.mjs` is a development/test proxy; production needs a
   TLS reverse proxy (deployment arrives in phase 8). Mail is file/log only
   (no SMTP yet).
-- Decisions (`decision.global`), attacks and webhooks arrive in phase 7;
-  PoP draining in phase 8.
+- PoP draining and per-PoP history (ClickHouse) arrive in phase 8.
 - Health reports BGP as "n/a" until the BIRD integration (phase 8).
 
 ## License

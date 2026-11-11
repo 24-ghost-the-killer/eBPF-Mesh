@@ -23,7 +23,7 @@ make                         # build/ebpf/xdp_main.o + target/debug/sentinelctl
 make test                    # cargo fmt --check, clippy -D warnings, cargo test
 make test-api                # API integration tests (throwaway PostgreSQL)
 sudo make test-bpf           # 284 BPF_PROG_TEST_RUN checks
-sudo make test-integration   # veth_counts, tunnel, policy_live, synflood, agent_kv, api_e2e
+sudo make test-integration   # veth_counts, tunnel, policy_live, synflood, agent_kv, decisions, api_e2e
 make test-web                # web: API client drift, typecheck, Vitest, next build
 sudo make test-e2e           # Playwright: onboarding, auth, isolation, accessibility (full lab)
 ```
@@ -38,8 +38,9 @@ usually not on root's PATH), so run `make` as your normal user first.
 | `policy_live.sh` | rate limit, block/allow with TTL and gc, observe vs mitigate, kill switch, services, PoP traffic bypass |
 | `api_e2e.sh` | the whole platform: API signup, protected IP, tunnel script, traffic through the PoP, policy and rules from the API enforced, "active on 1 of 1 PoPs" |
 | `agent_kv.sh` | phase 4 acceptance: `nats kv put` configures a live PoP; KV policy/services/rules enforced and acked; bad documents rejected safely; stats, telemetry, health, heartbeat, metrics; NATS permissions and TLS; crash, resync, clean stop |
+| `decisions.sh` | signed decisions at the PoP: trust, signature, window, replay, revocation, allowlist, TTL expiry in XDP, survives KV reconcile, NATS permissions |
 | `synflood.sh` | phase 2 acceptance: a spoofed SYN flood never reaches the server while `curl` succeeds; control run in observe mode |
-| `portal_e2e.sh` (`make test-e2e`) | phase 6 acceptance: Playwright drives Chromium through signup, email verification, passkey 2FA, protecting a server, the tunnel script and tunnel test, live traffic, mitigate, block rules, passkey login; TOTP login; security headers; tenant isolation in pages, API and WebSocket; axe accessibility checks (light/dark, phone width) |
+| `portal_e2e.sh` (`make test-e2e`) | phase 6 acceptance: Playwright drives Chromium through signup, email verification, passkey 2FA, protecting a server, the tunnel script and tunnel test, live traffic, mitigate, block rules, passkey login; TOTP login; security headers; tenant isolation in pages, API and WebSocket; axe accessibility checks (light/dark, phone width); phase 7 acceptance: a UDP flood detected, mitigated and shown with no manual action, signed webhooks |
 
 ### On macOS
 
@@ -203,6 +204,31 @@ are always fine.
 endpoints regenerate the snapshot with
 `UPDATE_OPENAPI=1 cargo test -p sentinel-api --test openapi`, then the web
 client with `pnpm --filter web gen:api`.
+
+## Running an analysis worker
+
+```sh
+sentinel-worker key generate --out /etc/sentinel/worker-1.key     # prints the public key
+sentinel-worker nkey generate --out /etc/sentinel/worker-1.nk     # NATS user
+sentinel-api signing-key add --issuer worker-1 --public-key <printed key>
+#   (or POST /api/v1/admin/signing-keys as a platform admin)
+render-config.py ... --worker worker-1=<NATS public nkey>         # NATS permissions
+sentinel-worker check-config --config /etc/sentinel/worker.toml
+sentinel-worker run --config /etc/sentinel/worker.toml
+```
+
+- `configs/worker.example.toml` documents the thresholds. `shards` must
+  equal the agents' `telemetry.shards`; more workers split the shards
+  automatically (NATS queue groups).
+- The PoPs learn trusted keys from the `keys` KV bucket (create it like the
+  others: `nats kv add keys`). `sentinel-api signing-key revoke --issuer
+  worker-1` makes every PoP refuse that worker within seconds.
+- Operators can sign a decision by hand:
+  `sentinel-worker sign --key worker-1.key --issuer worker-1 --tenant 42
+  --src 203.0.113.0/24 --ttl 600 --reason manual | nats pub decision.global`
+  (or `POST /api/v1/admin/decisions` with the API's own key in
+  `SENTINEL_DECISION_KEY`).
+- Agents count outcomes in `sentinel_decisions_total{result=...}`.
 
 ## Running the portal (web app)
 

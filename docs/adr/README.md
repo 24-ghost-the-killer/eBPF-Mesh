@@ -26,3 +26,5 @@ One file per decision: context, decision, consequences. Status is
 | [0018](0018-portal-architecture.md) | Portal architecture: same origin, client rendering, generated client | Accepted |
 | [0019](0019-passkeys.md) | Passkeys as a second factor | Accepted |
 | [0020](0020-tunnel-test.md) | Tunnel test: the PoPs ping the protected IP through the tunnel | Accepted |
+| [0021](0021-detection-and-signed-decisions.md) | Attack detection, signed decisions and attack records | Accepted |
+| [0022](0022-webhooks.md) | Attack notifications (webhooks) | Accepted |

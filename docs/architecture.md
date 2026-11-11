@@ -223,6 +223,21 @@ browser ──► reverse proxy (one origin) ──► Next.js (pages, CSP nonce
 - **Tunnel test:** every live PoP pings the protected IP through the real
   tunnel and return path (ADR 0020).
 
+## Analysis and decisions (phase 7)
+
+```
+agents ── stats.<pop> ───────────────┬─► every worker (exact volume)
+       └─ telemetry.<pop>.<shard> ───┘   one worker per shard (queue groups)
+                                          │ baseline, detection, top sources
+             attack.<tenant> ◄────────────┤
+             decision.global (Ed25519) ◄──┘
+                 │                 │
+       API: attacks, decisions,    agents: verify (keys bucket, window,
+       webhooks, live view         replay, allowlist) -> xs_block (TTL)
+```
+
+See ADR 0021 (detection, signing, trust, merging) and ADR 0022 (webhooks).
+
 ## Decisions
 
 See [docs/adr/](adr/).
