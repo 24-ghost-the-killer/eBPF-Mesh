@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Linux implementation: libbpf-rs for loading and map access, a pinned
-//! `bpf_link` per interface for the attachment.
+//! Attach/detach: libbpf-rs loads the object, a pinned `bpf_link` per
+//! interface holds the attachment.
 //!
 //! Why a pinned bpf_link (not a netlink attach): the link keeps the program
 //! attached after this process exits, cannot be silently replaced by another
@@ -14,19 +14,19 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
 use anyhow::{anyhow, bail, Context, Result};
-use libbpf_rs::{Link, MapCore, MapFlags, MapHandle, ObjectBuilder};
+use libbpf_rs::{Link, ObjectBuilder};
 
-use sentinel_common::abi::{MapBytes, XsCfg, XsStatsKey, XsStatsVal, XS_CFG_F_OBSERVE};
 use sentinel_common::pin::PinLayout;
-use sentinel_common::stats::Snapshot;
 
-use crate::Mode;
+use super::maps;
+use crate::{AttachArgs, Mode};
 
 const PROG_NAME: &str = "xs_xdp";
 const MAP_PREFIX: &str = "xs_";
 const BPF_FS_MAGIC: i64 = 0xcafe_4a11;
 
-pub fn attach(pins: &PinLayout, iface: &str, obj: &Path, mode: Mode) -> Result<()> {
+pub fn attach(pins: &PinLayout, args: &AttachArgs) -> Result<()> {
+    let (iface, obj, mode) = (args.iface.as_str(), args.obj.as_path(), args.mode);
     let link_pin = pins.xdp_link(iface)?;
     ensure_pin_dir(pins)?;
     if link_pin.exists() {
@@ -37,9 +37,16 @@ pub fn attach(pins: &PinLayout, iface: &str, obj: &Path, mode: Mode) -> Result<(
     }
     let ifindex = ifindex(iface)?;
 
-    let result = load_and_link(pins, ifindex, iface, obj, mode, &link_pin);
+    let result = load_and_link(pins, ifindex, iface, obj, mode, &link_pin)
+        .and_then(|_| init_cfg(pins, args));
     if result.is_err() {
-        // Do not leave orphaned map pins behind after a failed first attach.
+        // Roll back completely: no half-configured program, no orphan pins.
+        if link_pin.exists() {
+            if let Ok(link) = Link::open(&link_pin) {
+                let _ = link.detach();
+            }
+            let _ = fs::remove_file(&link_pin);
+        }
         let _ = cleanup_if_unused(pins);
     }
     result?;
@@ -52,6 +59,22 @@ pub fn attach(pins: &PinLayout, iface: &str, obj: &Path, mode: Mode) -> Result<(
         pins.root().display()
     );
     Ok(())
+}
+
+/// Sets the PoP addresses if given and creates a SYN-cookie key if the
+/// (possibly reused) config has none yet.
+fn init_cfg(pins: &PinLayout, args: &AttachArgs) -> Result<()> {
+    let mut cfg = maps::read_cfg(pins)?;
+    if let Some(ip) = args.pop_ip4 {
+        cfg.pop_ip4 = ip.octets();
+    }
+    if let Some(ip) = args.pop_ip6 {
+        cfg.pop_ip6 = ip.octets();
+    }
+    if cfg.cookie_key == [0, 0] {
+        cfg.cookie_key = maps::random_key()?;
+    }
+    maps::write_cfg(pins, &cfg)
 }
 
 fn load_and_link(
@@ -157,60 +180,6 @@ pub fn detach(pins: &PinLayout, iface: &str) -> Result<()> {
         if cleaned { "; removed pinned maps" } else { "" }
     );
     Ok(())
-}
-
-pub fn read_stats(pins: &PinLayout) -> Result<Snapshot> {
-    let map = open_pinned(pins, "xs_stats")?;
-    let mut rows = Vec::new();
-    for key in map.keys() {
-        let Some(k) = XsStatsKey::from_bytes(&key) else {
-            bail!(
-                "xs_stats key has unexpected size {} (ABI mismatch)",
-                key.len()
-            );
-        };
-        // An entry can vanish between keys() and lookup; skip it.
-        let Some(per_cpu) = map.lookup_percpu(&key, MapFlags::ANY)? else {
-            continue;
-        };
-        let vals = per_cpu
-            .iter()
-            .map(|b| {
-                XsStatsVal::from_bytes(b)
-                    .ok_or_else(|| anyhow!("xs_stats value has unexpected size {}", b.len()))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        rows.push((k, vals));
-    }
-    Ok(Snapshot::from_percpu(rows))
-}
-
-pub fn set_observe(pins: &PinLayout, on: bool) -> Result<()> {
-    let map = open_pinned(pins, "xs_cfg")?;
-    let key = 0u32.to_ne_bytes();
-    let mut cfg = map
-        .lookup(&key, MapFlags::ANY)?
-        .and_then(|b| XsCfg::from_bytes(&b))
-        .unwrap_or_default();
-    if on {
-        cfg.flags |= XS_CFG_F_OBSERVE;
-    } else {
-        cfg.flags &= !XS_CFG_F_OBSERVE;
-    }
-    map.update(&key, &cfg.to_bytes(), MapFlags::ANY)?;
-    println!("observe mode {}", if on { "on" } else { "off" });
-    Ok(())
-}
-
-fn open_pinned(pins: &PinLayout, name: &str) -> Result<MapHandle> {
-    let path = pins.map(name);
-    if !path.exists() {
-        bail!(
-            "XDP program is not attached ({} does not exist)",
-            path.display()
-        );
-    }
-    MapHandle::from_pinned_path(&path).with_context(|| format!("opening {}", path.display()))
 }
 
 /// Creates the pin directory and checks that it lives on bpffs.
