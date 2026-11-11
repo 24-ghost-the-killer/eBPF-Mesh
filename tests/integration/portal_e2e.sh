@@ -64,6 +64,7 @@ SENTINEL_DATABASE_OWNER_URL="$PGURL" "$API" migrate --config "$WORK/api.toml" >/
 "$PGSH" sql "$PGD" "ALTER ROLE sentinel_api LOGIN"
 SENTINEL_DATABASE_URL=${PGURL/postgres@/sentinel_api@} \
 SENTINEL_DATA_KEY=$(head -c 32 /dev/urandom | base64) \
+SENTINEL_DECISION_KEY=$(head -c 32 /dev/urandom | base64) \
 	ip netns exec "$NS_B" "$API" serve --config "$WORK/api.toml" >"$WORK/api.log" 2>&1 &
 BG_PIDS+=($!)
 for _ in $(seq 50); do inb ss -Hltn "sport = :8080" | grep -q . && break; sleep 0.1; done
@@ -118,6 +119,8 @@ drops) # packets dropped by block rules at the PoP so far
 		jq -r '[.entries[] | select(.verdict == "drop_block") | .pkts] | add // 0' ;;
 udp-rx) # UDP datagrams that reached the customer server (delivered or no port)
 	ip netns exec "$NS_C" awk '/^Udp:/ { if (!n) { for (i = 1; i <= NF; i++) { if (\$i == "InDatagrams") a = i; if (\$i == "NoPorts") b = i }; n = 1 } else print \$a + \$b }' /proc/net/snmp ;;
+promote) # <email>: make the user a platform administrator
+	"$PGSH" sql "$PGD" "UPDATE users SET is_platform_admin = true WHERE email = '\$2'" >/dev/null ;;
 webhooks) # what the webhook sink received (JSON lines)
 	cat "$WORK/webhooks.log" 2>/dev/null || true ;;
 traffic) # <protected ip> <seconds>: background client requests

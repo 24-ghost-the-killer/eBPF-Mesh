@@ -2,16 +2,8 @@
 // Accessibility (spec 13.5): no WCAG 2.1 A/AA violations axe can detect on
 // the auth pages and every portal page, in light and dark mode, on desktop
 // and phone widths.
-import AxeBuilder from "@axe-core/playwright";
-import { expect, type Page, test } from "@playwright/test";
-import { logIn, signUp, tenantOf, uniqueEmail } from "./helpers";
-
-async function audit(page: Page, label: string) {
-  await page.waitForLoadState("networkidle");
-  const r = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
-  const found = r.violations.map((v) => `${label}: ${v.id} (${v.impact}) ${v.nodes.map((n) => n.target.join(" ")).join(", ")}`);
-  expect(found, found.join("\n")).toEqual([]);
-}
+import { expect, test } from "@playwright/test";
+import { audit, logIn, signUp, tenantOf, uniqueEmail } from "./helpers";
 
 for (const scheme of ["light", "dark"] as const) {
   test(`portal pages are accessible (${scheme})`, async ({ page }) => {

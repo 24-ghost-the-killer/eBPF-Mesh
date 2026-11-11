@@ -58,6 +58,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/pops/{id}/drain": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Drain a PoP (or undo it) through its BGP announcements (ADR 0023). */
+        post: operations["drain_pop"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/admin/signing-keys": {
         parameters: {
             query?: never;
@@ -644,6 +661,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/tenants/{tid}/traffic": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Traffic history per PoP (from ClickHouse traffic_1m). */
+        get: operations["traffic"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/tenants/{tid}/users": {
         parameters: {
             query?: never;
@@ -954,6 +988,19 @@ export interface components {
             /** Format: int32 */
             ttl_s: number;
         };
+        Drain: {
+            /**
+             * @description true: announce the anycast prefixes with a longer AS path so traffic
+             *     moves to other PoPs; false: back to normal.
+             */
+            drain: boolean;
+        };
+        DrainResp: {
+            drain: boolean;
+            pop: string;
+            /** Format: int64 */
+            version: number;
+        };
         EmailReq: {
             email: string;
         };
@@ -1092,6 +1139,10 @@ export interface components {
         PopRates: components["schemas"]["Rates"] & {
             pop: string;
         };
+        PopSeries: {
+            points: components["schemas"]["TrafficPoint"][];
+            pop: string;
+        };
         PopStatus: {
             id: string;
             /** Format: int64 */
@@ -1209,6 +1260,33 @@ export interface components {
             otpauth_url: string;
             /** @description Base32 secret for manual entry. */
             secret: string;
+        };
+        Traffic: {
+            /** Format: int64 */
+            from: number;
+            pops: components["schemas"]["PopSeries"][];
+            /** Format: int32 */
+            step: number;
+            /** Format: int64 */
+            to: number;
+        };
+        TrafficPoint: {
+            /** Format: double */
+            clean_pps: number;
+            /** Format: double */
+            filtered_pps: number;
+            /** Format: double */
+            in_bps: number;
+            /**
+             * Format: double
+             * @description Average rates over the step (sampled estimates).
+             */
+            in_pps: number;
+            /**
+             * Format: int64
+             * @description Unix ms at the start of the step.
+             */
+            ts: number;
         };
         TunnelTest: {
             /**
@@ -1395,6 +1473,47 @@ export interface operations {
                 };
             };
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    drain_pop: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Drain"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DrainResp"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -2655,6 +2774,58 @@ export interface operations {
                 content?: never;
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    traffic: {
+        parameters: {
+            query?: {
+                /** @description Unix ms (default: `to` - 1 hour). */
+                from?: number;
+                /** @description Unix ms (default: now). */
+                to?: number;
+                /** @description Seconds per point, a multiple of 60 (default 60). */
+                step?: number;
+            };
+            header?: never;
+            path: {
+                tid: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Traffic"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 "use client";
-import { Activity, ListFilter, LogOut, Server, Settings, Shield, Siren } from "lucide-react";
+import { Activity, ListFilter, LogOut, Radio, Server, Settings, Shield, Siren } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { api, setCsrf } from "@/lib/api/client";
@@ -73,6 +73,14 @@ export function PortalShell({ tenantParam, children }: { tenantParam: string; ch
               );
             })}
           </nav>
+          {me.user.is_platform_admin && (
+            <div className="px-2 pb-2">
+              <Link href="/admin" className="flex items-center gap-2 rounded-md px-3 py-2 text-sm text-muted-fg hover:bg-muted">
+                <Radio className="size-4" aria-hidden />
+                Platform admin
+              </Link>
+            </div>
+          )}
           <div className="hidden px-4 py-3 text-xs text-muted-fg md:block">
             <p className="truncate" title={me.user.email}>
               {me.user.email}

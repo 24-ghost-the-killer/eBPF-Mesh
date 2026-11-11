@@ -122,3 +122,17 @@ describe("security", () => {
     expect(csp("abc", { dev: false, https: false })).not.toContain("upgrade-insecure-requests");
   });
 });
+
+describe("traffic history", () => {
+  it("pivots per-PoP series into chart rows", async () => {
+    const { pivot } = await import("@/components/traffic-history");
+    const rows = pivot([
+      { pop: "pop-1", points: [{ ts: 60_000, in_pps: 5 }, { ts: 0, in_pps: 1 }] },
+      { pop: "pop-2", points: [{ ts: 0, in_pps: 2 }] },
+    ]);
+    expect(rows).toEqual([
+      { ts: 0, "pop-1": 1, "pop-2": 2 },
+      { ts: 60_000, "pop-1": 5 },
+    ]);
+  });
+});

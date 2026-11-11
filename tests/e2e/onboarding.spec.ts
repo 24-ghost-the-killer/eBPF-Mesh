@@ -13,8 +13,17 @@ const CLIENT = process.env.LAB_CLIENT ?? "203.0.113.1";
 
 test("onboarding: sign up, 2FA, protect a server, tunnel, live traffic, mitigate, rules", async ({ page }) => {
   const email = uniqueEmail("onboard");
+  // Script errors fail the test; so do failed API calls, except the
+  // documented 503 of /traffic when ClickHouse is not configured (this harness).
   const consoleErrors: string[] = [];
-  page.on("console", (m) => m.type() === "error" && consoleErrors.push(m.text()));
+  page.on("console", (m) => m.type() === "error" && !m.text().startsWith("Failed to load resource") && consoleErrors.push(m.text()));
+  const failedApi: string[] = [];
+  page.on("response", (r) => {
+    const u = new URL(r.url());
+    if (!u.pathname.startsWith("/api/") || r.status() < 500) return;
+    if (r.status() === 503 && u.pathname.endsWith("/traffic")) return;
+    failedApi.push(`${r.status()} ${u.pathname}`);
+  });
 
   // 1. Sign up and verify the email address.
   await signUp(page, email);
@@ -119,4 +128,5 @@ test("onboarding: sign up, 2FA, protect a server, tunnel, live traffic, mitigate
   await expect(page).toHaveURL(new RegExp(`/t/${tid}$`));
 
   expect(consoleErrors.filter((e) => !/favicon/.test(e))).toEqual([]);
+  expect(failedApi).toEqual([]);
 });

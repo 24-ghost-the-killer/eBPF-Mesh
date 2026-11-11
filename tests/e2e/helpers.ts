@@ -2,6 +2,7 @@
 import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import AxeBuilder from "@axe-core/playwright";
 import { expect, type Page } from "@playwright/test";
 import * as OTPAuth from "otpauth";
 
@@ -96,4 +97,12 @@ export async function virtualAuthenticator(page: Page) {
 
 export function totpCode(secret: string): string {
   return new OTPAuth.TOTP({ secret: OTPAuth.Secret.fromBase32(secret), digits: 6, period: 30 }).generate();
+}
+
+/** No WCAG 2.1 A/AA violations axe can find on the current page. */
+export async function audit(page: Page, label: string) {
+  await page.waitForLoadState("networkidle");
+  const r = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
+  const found = r.violations.map((v) => `${label}: ${v.id} (${v.impact}) ${v.nodes.map((n) => n.target.join(" ")).join(", ")}`);
+  expect(found, found.join("\n")).toEqual([]);
 }

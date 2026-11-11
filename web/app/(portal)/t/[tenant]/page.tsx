@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useState } from "react";
 import { LiveChart } from "@/components/live-chart";
+import { TrafficHistory } from "@/components/traffic-history";
 import { PageHeader } from "@/components/portal-shell";
 import { QueryView } from "@/components/states";
 import { useTenant } from "@/components/tenant";
@@ -94,10 +95,20 @@ export default function Overview() {
         </CardContent>
       </Card>
 
+      <Card className="mt-6">
+        <CardHeader>
+          <CardTitle>Traffic per PoP</CardTitle>
+          <CardDescription>Inbound packets per second, last hour (per minute).</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <TrafficHistory tenant={t.id} />
+        </CardContent>
+      </Card>
+
       <div className="mt-6 grid gap-6 lg:grid-cols-2">
         <Card>
           <CardHeader>
-            <CardTitle>Traffic per PoP</CardTitle>
+            <CardTitle>Right now per PoP</CardTitle>
           </CardHeader>
           <CardContent>
             {!live.last || live.last.pops.length === 0 ? (
