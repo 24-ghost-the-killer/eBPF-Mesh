@@ -20,6 +20,7 @@ pub fn run(pins: PinLayout, cli: Cli) -> Result<()> {
         Cmd::Stats { watch, interval } => cmds::stats(&pins, json, watch, interval),
         Cmd::Observe { state } => cmds::observe(&pins, state.on()),
         Cmd::Config(c) => cmds::config(&pins, c, json),
+        Cmd::Asset(c) => cmds::asset(&pins, c, json),
         Cmd::Policy(c) => cmds::policy(&pins, c, json),
         Cmd::Service(c) => cmds::service(&pins, c, json),
         Cmd::Allow(c) => cmds::rules(&pins, RuleKind::Allow, c, json),

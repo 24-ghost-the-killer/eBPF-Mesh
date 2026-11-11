@@ -7,8 +7,11 @@ use std::io::Read;
 use anyhow::{anyhow, bail, Context, Result};
 use libbpf_rs::{ErrorKind, MapCore, MapFlags, MapHandle};
 
-use sentinel_common::abi::{MapBytes, XsCfg, XsPolicy};
+use sentinel_common::abi::{MapBytes, XsAsset, XsCfg, XsTenant6Key, XsTenantKey};
 use sentinel_common::pin::PinLayout;
+use sentinel_common::prefix::Prefix;
+
+use crate::AssetRef;
 
 pub fn open(pins: &PinLayout, name: &str) -> Result<MapHandle> {
     let path = pins.map(name);
@@ -120,12 +123,50 @@ pub fn write_cfg(pins: &PinLayout, cfg: &XsCfg) -> Result<()> {
     put(&open(pins, "xs_cfg")?, &ZERO, cfg)
 }
 
-pub fn read_policy(pins: &PinLayout) -> Result<XsPolicy> {
-    Ok(get(&open(pins, "xs_policy")?, &ZERO)?.unwrap_or_default())
+/// Every asset, IPv4 then IPv6, sorted by id.
+pub fn assets(pins: &PinLayout) -> Result<Vec<(Prefix, XsAsset)>> {
+    let mut out = Vec::new();
+    for (k, a) in entries::<XsTenantKey, XsAsset>(&open(pins, "xs_tenants")?)? {
+        if let Some(p) = Prefix::from_tenant_key4(&k) {
+            out.push((p, a));
+        }
+    }
+    for (k, a) in entries::<XsTenant6Key, XsAsset>(&open(pins, "xs_tenants6")?)? {
+        if let Some(p) = Prefix::from_tenant_key6(&k) {
+            out.push((p, a));
+        }
+    }
+    out.sort_by_key(|(_, a)| a.asset);
+    Ok(out)
 }
 
-pub fn write_policy(pins: &PinLayout, p: &XsPolicy) -> Result<()> {
-    put(&open(pins, "xs_policy")?, &ZERO, p)
+pub fn resolve_asset(pins: &PinLayout, r: &AssetRef) -> Result<(Prefix, XsAsset)> {
+    assets(pins)?
+        .into_iter()
+        .find(|(p, a)| match r {
+            AssetRef::Id(id) => a.asset == *id,
+            AssetRef::Prefix(q) => p == q,
+        })
+        .ok_or_else(|| match r {
+            AssetRef::Id(id) => anyhow!("no asset with id {id}"),
+            AssetRef::Prefix(q) => anyhow!("no asset for {q} (prefixes must match exactly)"),
+        })
+}
+
+pub fn put_asset(pins: &PinLayout, p: &Prefix, a: &XsAsset) -> Result<()> {
+    match (p.tenant_key4(), p.tenant_key6()) {
+        (Some(k), _) => put(&open(pins, "xs_tenants")?, &k, a),
+        (None, Some(k)) => put(&open(pins, "xs_tenants6")?, &k, a),
+        _ => unreachable!("a prefix is v4 or v6"),
+    }
+}
+
+pub fn del_asset(pins: &PinLayout, p: &Prefix) -> Result<bool> {
+    match (p.tenant_key4(), p.tenant_key6()) {
+        (Some(k), _) => del(&open(pins, "xs_tenants")?, &k),
+        (None, Some(k)) => del(&open(pins, "xs_tenants6")?, &k),
+        _ => unreachable!("a prefix is v4 or v6"),
+    }
 }
 
 /// CLOCK_BOOTTIME in nanoseconds: the clock bpf_ktime_get_boot_ns() uses.
@@ -138,6 +179,31 @@ pub fn boot_ns() -> u64 {
     let rc = unsafe { libc::clock_gettime(libc::CLOCK_BOOTTIME, &mut ts) };
     assert_eq!(rc, 0, "clock_gettime(CLOCK_BOOTTIME) failed");
     ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64
+}
+
+/// MTU of an interface in the current network namespace (SIOCGIFMTU; not
+/// sysfs, which may belong to another namespace under nsenter).
+pub fn iface_mtu(iface: &str) -> Result<u32> {
+    // SAFETY: plain socket(2); closed below.
+    let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error()).context("socket for SIOCGIFMTU");
+    }
+    // SAFETY: zeroed ifreq is valid; the name fits (validated, <= 15 bytes).
+    let mut ifr: libc::ifreq = unsafe { std::mem::zeroed() };
+    for (d, s) in ifr.ifr_name.iter_mut().zip(iface.bytes()) {
+        *d = s as libc::c_char;
+    }
+    // SAFETY: valid fd and ifreq pointer for SIOCGIFMTU.
+    let rc = unsafe { libc::ioctl(fd, libc::SIOCGIFMTU as _, &mut ifr) };
+    let err = std::io::Error::last_os_error();
+    // SAFETY: fd is ours.
+    unsafe { libc::close(fd) };
+    if rc < 0 {
+        return Err(err).with_context(|| format!("reading MTU of {iface}"));
+    }
+    // SAFETY: SIOCGIFMTU filled the ifru_mtu member of the union.
+    Ok(unsafe { ifr.ifr_ifru.ifru_mtu } as u32)
 }
 
 /// A fresh, never-zero SipHash key from the kernel CSPRNG.

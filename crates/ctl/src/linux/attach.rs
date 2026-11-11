@@ -74,6 +74,15 @@ fn init_cfg(pins: &PinLayout, args: &AttachArgs) -> Result<()> {
     if cfg.cookie_key == [0, 0] {
         cfg.cookie_key = maps::random_key()?;
     }
+    // Tunnelled packets must fit this interface (ADR 0012).
+    let mtu = maps::iface_mtu(&args.iface)?;
+    cfg.uplink_mtu = u16::try_from(mtu).unwrap_or(u16::MAX);
+    if cfg.pop_ip4().is_none() {
+        eprintln!(
+            "sentinelctl: warning: no PoP IPv4 configured (--pop-ip4 / XS_POP_IP4); \
+             protected traffic cannot be tunnelled and is dropped as drop_tunnel"
+        );
+    }
     maps::write_cfg(pins, &cfg)
 }
 
