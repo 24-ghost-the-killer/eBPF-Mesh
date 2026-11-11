@@ -17,9 +17,9 @@ ASNs. Nothing here is meant to touch the real internet yet.
 | 2 | Filtering: bogons, allow/blocklists, services, rate limit, SYN cookies, observe/mitigate | done |
 | 3 | Tenants and IPIP tunnel delivery, return path, customer script, MTU/MSS | done |
 | 4 | PoP agent and NATS: KV config with acks, stats, telemetry, health | done |
-| 5 | Control-plane API and PostgreSQL: auth, 2FA, roles, RLS, assets, policy, rules, audit | **done** |
-| 6 | Portal v1 | next |
-| 7 | Analysis workers and signed decisions | |
+| 5 | Control-plane API and PostgreSQL: auth, 2FA, roles, RLS, assets, policy, rules, audit | done |
+| 6 | Portal v1: login, 2FA with passkeys, live overview, protected IPs with tunnel script/test, rules | **done** |
+| 7 | Analysis workers and signed decisions | next |
 | 8 | Anycast lab (containerlab + BIRD) | |
 | 9 | Public website | |
 
@@ -63,6 +63,19 @@ ASNs. Nothing here is meant to touch the real internet yet.
   OpenAPI at `/api/v1/openapi.json` (snapshot in `docs/openapi.json`)
   ([ADR 0016](docs/adr/0016-api-sessions-rls-outbox.md),
   [ADR 0017](docs/adr/0017-api-shape.md)).
+- **Portal** (`web/`, Next.js + Tailwind + shadcn/ui-style components +
+  Recharts): signup, email verification, login, password reset, 2FA with
+  passkeys or an authenticator app; an overview with a live graph over
+  WebSocket (in / delivered / dropped, per PoP); protected IPs with an add
+  wizard, the tunnel script (copy/download), "Active on X of Y PoPs" and a
+  **tunnel test** run by every PoP through the real tunnel; a rules page with
+  observe/mitigate, allowed services, rate limits, SYN cookies and
+  allow/block lists. Client generated from the OpenAPI document; one origin
+  with the API; CSP with nonces and the other security headers; keyboard
+  accessible, responsive, dark and light
+  ([ADR 0018](docs/adr/0018-portal-architecture.md),
+  [ADR 0019](docs/adr/0019-passkeys.md),
+  [ADR 0020](docs/adr/0020-tunnel-test.md)).
 - **`sentinelctl`**: attach/detach (native XDP, pinned `bpf_link`), stats,
   assets (`asset add/del/list/script`), per-asset policy and services,
   allow/block rules with TTL, PoP config, SYN-cookie key rotation, gc.
@@ -75,10 +88,22 @@ ASNs. Nothing here is meant to touch the real internet yet.
 - **Tests**: 284 `BPF_PROG_TEST_RUN` checks (verdicts, exact counters, exact
   output bytes for SYN challenges, tunnel encapsulation, the return path with
   MSS clamping, sampled events), 6 veth/netns suites with real traffic
-  (111 checks), 84 Rust tests including API integration tests against a
-  real PostgreSQL, CI.
+  (111 checks), 89 Rust tests including 6 API integration tests against a
+  real PostgreSQL, 19 Vitest tests, 7 Playwright browser tests against the
+  full lab, CI.
 
 Acceptance tests:
+- phase 6 (`tests/e2e/onboarding.spec.ts`, run by
+  `tests/integration/portal_e2e.sh` against the full lab): in Chromium, a
+  customer signs up, verifies the email, adds a passkey, protects a server,
+  copies the tunnel script, sees the tunnel test fail, runs the script on
+  the "origin" namespace, sees the tunnel test pass from the PoP, watches
+  real client traffic on the live graph, switches to mitigate, blocks and
+  unblocks a client (enforced at the PoP), and logs in again with the
+  passkey. `isolation.spec.ts`: customer A gets "not found" for every page,
+  API route and the live WebSocket of customer B. `a11y.spec.ts`: axe finds
+  no WCAG 2.1 A/AA violations on any portal page in light and dark mode,
+  and pages do not scroll sideways on a phone.
 - phase 5 (`crates/api/tests/api.rs`): a customer signs up and gets a
   protected IP through the API; a second customer gets 404 for every way of
   reaching it, and RLS hides it at the SQL level even for a non-member who
@@ -122,6 +147,10 @@ $C stats --watch                             # observe first ...
 $C policy set --asset 1 --mitigate on        # ... then enforce
 ```
 
+The portal (Node.js 24 + pnpm): `make test-web`, then `sudo make test-e2e`
+for the browser tests against the lab; see "Running the portal" in the
+runbook.
+
 On macOS (Docker Desktop): `make docker-test` runs every suite inside a
 privileged Linux container; `make docker-shell` opens a shell there.
 
@@ -138,20 +167,22 @@ crates/bpf                Linux access to the XDP program (attach, maps, rules, 
 crates/ctl                sentinelctl (operator CLI)
 crates/agent              sentinel-agent (PoP agent)
 crates/api                sentinel-api (control-plane API) + its integration tests
+web/                      Next.js portal (app/, components/, lib/api generated client)
 crates/gen                sentinel-gen (lab traffic generator)
 crates/worker             placeholder for phase 7
 migrations/postgres       schema + Row Level Security
 tests/bpf                 BPF_PROG_TEST_RUN harness, parser and policy suites
 tests/api                 throwaway PostgreSQL for the API tests
 tests/integration         veth/netns suites (counts, tunnel, live policy, SYN flood,
-                          agent + NATS, API end to end)
-deploy/docker             development/test image (+ pinned NATS install script)
+                          agent + NATS, API end to end, portal end to end)
+tests/e2e                 Playwright browser tests (onboarding, auth, isolation)
+deploy/docker             development/test images (+ pinned NATS and Node installers)
 deploy/nats               NATS server config renderer (users, permissions, TLS)
 configs/                  example agent and API configuration
 docs/                     architecture, runbook, ADRs
 ```
 
-## Known limitations (after phase 5)
+## Known limitations (after phase 6)
 
 - Packets that do not fit the uplink MTU after the 20-byte tunnel header are
   dropped (`drop_too_big`); ICMP "fragmentation needed"/"packet too big"
@@ -165,8 +196,17 @@ docs/                     architecture, runbook, ADRs
   `drop_unverified`.
 - An expired longer prefix shadows an active shorter one until `gc` runs
   ([ADR 0011](docs/adr/0011-expiry-and-fail-open.md)).
-- No web app yet (phase 6); passkeys, traffic graphs and the live view come
-  with it. Mail is file/log only (no SMTP yet).
+- The portal has no attacks pages, webhooks, members/API-key/audit screens
+  or admin panel yet (attacks and webhooks: phase 7; admin: phase 8). The
+  API endpoints for members, API keys and the audit log exist.
+- The overview graph is live only (last two minutes); history from
+  ClickHouse (`traffic_1m`) comes with phase 8. Live frames come from the
+  PoPs' exact per-tenant counters (`stats.<pop>`), at most 5 s old.
+- Passkeys are a second factor, not a passwordless login.
+- The tunnel test probes IPv4 /32 assets only, one test per asset every 5 s.
+- `web/scripts/edge.mjs` is a development/test proxy; production needs a
+  TLS reverse proxy (deployment arrives in phase 8). Mail is file/log only
+  (no SMTP yet).
 - Decisions (`decision.global`), attacks and webhooks arrive in phase 7;
   PoP draining in phase 8.
 - Health reports BGP as "n/a" until the BIRD integration (phase 8).

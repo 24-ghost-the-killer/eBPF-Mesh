@@ -199,6 +199,30 @@ browser / API client ── HTTPS ──► sentinel-api (axum)
 - **Endpoints and deviations:** ADR 0017; the OpenAPI document is the
   contract for the web app.
 
+## Portal (phase 6)
+
+```
+browser ──► reverse proxy (one origin) ──► Next.js (pages, CSP nonce, headers)
+                     │
+                     └── /api/v1/* (HTTP + WebSocket) ──► sentinel-api
+                                                           │  stats.> (latest per PoP)
+                                                           │  probe.<pop> request/reply
+                                                           ▼
+                                                         NATS ◄──► agents
+```
+
+- Pages render in the browser and call the API through a client generated
+  from the OpenAPI document; the Next.js server holds no credentials
+  (ADR 0018).
+- **Live view:** the API subscribes to `stats.>` once and keeps the latest
+  message per PoP; each `/tenants/{id}/live` WebSocket gets one frame per
+  second built only from its tenant's rows (in / filtered / clean / return
+  rates, per PoP and per verdict). The Origin header must match the portal;
+  the session is re-checked every 30 s.
+- **Passkeys** are a second factor next to TOTP (ADR 0019).
+- **Tunnel test:** every live PoP pings the protected IP through the real
+  tunnel and return path (ADR 0020).
+
 ## Decisions
 
 See [docs/adr/](adr/).

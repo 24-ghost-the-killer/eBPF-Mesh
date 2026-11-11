@@ -23,3 +23,6 @@ One file per decision: context, decision, consequences. Status is
 | [0015](0015-kv-schema-and-agent-ownership.md) | KV schema, versioning and agent ownership of maps | Accepted |
 | [0016](0016-api-sessions-rls-outbox.md) | API: sessions, CSRF, Row Level Security, outbox | Accepted |
 | [0017](0017-api-shape.md) | API shape: per-asset policy and onboarding details | Accepted |
+| [0018](0018-portal-architecture.md) | Portal architecture: same origin, client rendering, generated client | Accepted |
+| [0019](0019-passkeys.md) | Passkeys as a second factor | Accepted |
+| [0020](0020-tunnel-test.md) | Tunnel test: the PoPs ping the protected IP through the tunnel | Accepted |

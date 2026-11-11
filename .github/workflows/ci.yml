@@ -11,6 +11,8 @@ permissions:
 jobs:
   build-and-test:
     runs-on: ubuntu-24.04
+    env:
+      PLAYWRIGHT_BROWSERS_PATH: /tmp/pw-browsers
     steps:
       - uses: actions/checkout@v4
 
@@ -29,6 +31,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Install Node.js and pnpm (pinned, checksummed)
+        run: sudo deploy/docker/install-node.sh
+
       - name: Lint and unit tests
         run: make test
 
@@ -43,3 +48,20 @@ jobs:
 
       - name: Integration tests (veth + netns, native XDP)
         run: sudo make test-integration
+
+      - name: Web app (API client drift, typecheck, Vitest, build)
+        run: make test-web
+
+      - name: Chromium and its system libraries
+        run: sudo env "PATH=$PATH" PLAYWRIGHT_BROWSERS_PATH=$PLAYWRIGHT_BROWSERS_PATH pnpm --filter e2e exec playwright install --with-deps chromium
+
+      - name: Browser tests against the lab (Playwright)
+        run: sudo env "PATH=$PATH" PLAYWRIGHT_BROWSERS_PATH=$PLAYWRIGHT_BROWSERS_PATH E2E_ARTIFACTS=$PWD/build/e2e-artifacts make test-e2e
+
+      - name: Keep browser traces of failed tests
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-artifacts
+          path: build/e2e-artifacts
+          if-no-files-found: ignore

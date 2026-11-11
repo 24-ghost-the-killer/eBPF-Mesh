@@ -10,6 +10,9 @@
   `iputils-ping`, `jq`, `curl`, `ethtool`, `openssl`, `python3`, `nsenter`
   (util-linux), `nats-server` and `nats` (`deploy/docker/install-nats.sh`
   installs the pinned versions), PostgreSQL 16+ server binaries (`initdb`)
+- For the web app: Node.js 24 LTS and pnpm (`deploy/docker/install-node.sh`
+  installs the pinned versions); the browser tests download Chromium via
+  Playwright
 - bpffs mounted at `/sys/fs/bpf` (systemd does this; otherwise
   `mount -t bpf bpf /sys/fs/bpf`)
 
@@ -21,6 +24,8 @@ make test                    # cargo fmt --check, clippy -D warnings, cargo test
 make test-api                # API integration tests (throwaway PostgreSQL)
 sudo make test-bpf           # 284 BPF_PROG_TEST_RUN checks
 sudo make test-integration   # veth_counts, tunnel, policy_live, synflood, agent_kv, api_e2e
+make test-web                # web: API client drift, typecheck, Vitest, next build
+sudo make test-e2e           # Playwright: onboarding, auth, isolation, accessibility (full lab)
 ```
 
 `sudo make test-integration` does not build the Rust binaries (cargo is
@@ -34,6 +39,7 @@ usually not on root's PATH), so run `make` as your normal user first.
 | `api_e2e.sh` | the whole platform: API signup, protected IP, tunnel script, traffic through the PoP, policy and rules from the API enforced, "active on 1 of 1 PoPs" |
 | `agent_kv.sh` | phase 4 acceptance: `nats kv put` configures a live PoP; KV policy/services/rules enforced and acked; bad documents rejected safely; stats, telemetry, health, heartbeat, metrics; NATS permissions and TLS; crash, resync, clean stop |
 | `synflood.sh` | phase 2 acceptance: a spoofed SYN flood never reaches the server while `curl` succeeds; control run in observe mode |
+| `portal_e2e.sh` (`make test-e2e`) | phase 6 acceptance: Playwright drives Chromium through signup, email verification, passkey 2FA, protecting a server, the tunnel script and tunnel test, live traffic, mitigate, block rules, passkey login; TOTP login; security headers; tenant isolation in pages, API and WebSocket; axe accessibility checks (light/dark, phone width) |
 
 ### On macOS
 
@@ -54,7 +60,11 @@ generated script creates `sentinel0`. Override with
 
 Cargo's registry and target directory live in Docker volumes
 (`sentinel-cargo`, `sentinel-target`) so Linux artifacts never mix with the
-Mac's `target/`.
+Mac's `target/`; so do `node_modules`, `web/.next`, the pnpm store and
+Playwright's browsers. `make docker-test` uses the `sentinel-web` image
+(`Dockerfile.web`: the dev image plus Node.js and Chromium's libraries).
+Failed browser tests leave traces and screenshots in
+`build/e2e-artifacts/` (`pnpm --filter e2e exec playwright show-trace ...`).
 
 ## Operating sentinelctl
 
@@ -191,7 +201,34 @@ are always fine.
 
 `sentinel-api openapi` prints the OpenAPI document; after changing
 endpoints regenerate the snapshot with
-`UPDATE_OPENAPI=1 cargo test -p sentinel-api --test openapi`.
+`UPDATE_OPENAPI=1 cargo test -p sentinel-api --test openapi`, then the web
+client with `pnpm --filter web gen:api`.
+
+## Running the portal (web app)
+
+The portal is a Next.js app in `web/` that only talks to the API, under the
+same origin ([ADR 0018](adr/0018-portal-architecture.md)):
+
+```sh
+pnpm install
+pnpm --filter web build && pnpm --filter web start      # Next.js on 127.0.0.1:3001
+EDGE_LISTEN=127.0.0.1:3000 API_ORIGIN=http://127.0.0.1:8080 \
+  WEB_ORIGIN=http://127.0.0.1:3001 node web/scripts/edge.mjs   # one origin for both
+```
+
+- The API's `server.public_url` must be the URL users open (passkeys are
+  bound to its host; WebSocket origins are checked against it; mail links
+  point there). Set `trust_proxy = true` behind the edge proxy or any
+  reverse proxy that overwrites `X-Forwarded-For`.
+- `edge.mjs` is for development and tests. In production put a TLS reverse
+  proxy in front that routes `/api/v1/` (with WebSocket upgrades) to the API
+  and everything else to Next.js; the portal then sends HSTS.
+- Browsers treat `http://localhost` as secure, so `cookie_secure = true`
+  works there; other plain-HTTP lab hosts need `cookie_secure = false`, and
+  passkeys need HTTPS or localhost.
+- Tunnel tests need the PoPs online and connected to NATS, a route from each
+  PoP to the origins, and the API allowed to publish `probe.>`
+  (`render-config.py` does this; [ADR 0020](adr/0020-tunnel-test.md)).
 
 ## sentinel-gen (lab traffic generator)
 
