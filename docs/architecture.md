@@ -27,21 +27,47 @@ Browser -> Web app (Next.js) -> Control-plane API (axum)
 - The packet path never waits for userspace. Every dynamic mitigation has a
   TTL enforced inside XDP.
 
-## Dataplane (phase 1)
+## Dataplane (phases 1-2)
 
 ### Pipeline
 
 ```
-frame ─► parse ──malformed──────────────► count DROP_MALFORMED ─► XDP_DROP
-           │                                                     (XDP_PASS if observe)
-           ├──non-IP (ARP, LLDP…)───────► count PASS_NON_IP ────► XDP_PASS
-           ├──non-first fragment────────► count FRAGMENT ───────► XDP_PASS
-           └──ok────────────────────────► count PASS ───────────► XDP_PASS
+frame
+ │ 1 parse ─────────── malformed ───────────────► DROP_MALFORMED   [global]
+ │                     non-IP (ARP, LLDP…) ─────► PASS_NON_IP
+ │ 2 local ─────────── dst = PoP IP, IPv6 ND ───► PASS_LOCAL
+ │ 3 bogon source ──────────────────────────────► DROP_BOGON       [global]
+ │ 4 tenant lookup     (phase 3; now: one default policy, tenant 0)
+ │ 5 allowlist ─────── tenant, then global ─────► PASS_ALLOW (skips 6-8)
+ │ 6 blocklist ─────── expires_ns > now ────────► DROP_BLOCK       [policy]
+ │ 7 services ──────── proto+port (ICMP errors ─► DROP_SERVICE     [policy]
+ │                     always pass)
+ │   fragments ─────── non-first, policy drops ─► DROP_FRAGMENT    [policy]
+ │ 8 token bucket ──── per source (v6: per /64) ► DROP_RATELIMIT   [policy]
+ │   SYN cookies ───── unverified SYN ──────────► TX_SYN_CHALLENGE (XDP_TX)
+ │                     RST with valid cookie ───► SYN_VERIFIED (consumed)
+ │                     other TCP, unverified ───► DROP_UNVERIFIED  [policy]
+ └──────────────────────────────────────────────► PASS (or FRAGMENT)
 ```
 
-Later phases insert, in this order: own-unicast pass, bogon filter, tenant
-lookup, allowlist, blocklist, allowed services, rate limit / SYN cookies,
-sampling, IPIP encapsulation.
+[global] drops are suspended only by the kill switch (`XS_CFG_F_OBSERVE`).
+[policy] drops and challenges happen only when the policy has
+`XS_P_MITIGATE`; otherwise the verdict is counted and the packet passed
+(observe mode, the default). Phase 3 adds IPIP encapsulation after step 8.
+
+### SYN-cookie source verification
+
+```
+client                      XDP (PoP)                         origin
+SYN(isn) ─────────────────► unverified → XDP_TX SYN-ACK
+         ◄───────────────── (seq=h>>32, ack=cookie ≠ isn+1)
+RST(seq=cookie) ──────────► valid → xs_verified[src]=now+ttl, drop
+SYN(isn) (retransmit) ────► verified → pass ────────────────► handshake
+```
+
+cookie = SipHash-2-4(key, saddr, daddr, sport, dport, ⌊now / 2^34 ns⌋); the
+current and previous slot are accepted. See
+[ADR 0009](adr/0009-syncookie-source-verification.md).
 
 ### Parser rules
 
@@ -50,7 +76,7 @@ sampling, IPIP encapsulation.
 | Ethernet | ≥ 14 bytes | shorter |
 | VLAN | up to 2 tags (0x8100, 0x88A8) | a 3rd tag, truncated tag |
 | IPv4 | version 4, IHL ≥ 5, options | IHL < 5, header beyond frame, `tot_len` < IHL or beyond frame |
-| IPv4 fragments | first fragment parsed normally; later fragments → `FRAGMENT` | first fragment too short for its L4 header |
+| IPv4 fragments | first fragment parsed normally; later fragments carry no L4 header and go to the fragment policy (step 7) | first fragment too short for its L4 header |
 | IPv6 | version 6, `payload_len` within frame | truncated header, `payload_len` beyond frame |
 | IPv6 ext. headers | HOP, ROUTING, DEST, AUTH, FRAGMENT; up to 4 | 5th header, header beyond frame or `payload_len` |
 | TCP | `doff` ≥ 5, header inside frame and IP length | otherwise |
@@ -63,8 +89,17 @@ Trailing Ethernet padding (IP length shorter than the frame) is valid.
 
 | Map | Type | Key → Value | Written by |
 |---|---|---|---|
-| `xs_cfg` | ARRAY(1) | 0 → `{flags}` (`XS_CFG_F_OBSERVE`) | `sentinelctl observe` |
-| `xs_stats` | PERCPU_HASH(65536) | `{tenant, verdict}` → `{pkts, bytes}` | XDP (`sentinelctl stats` reads) |
+| `xs_cfg` | ARRAY(1) | 0 → kill switch, PoP IPv4/IPv6, SYN-cookie key, verify TTL | `sentinelctl attach/config/observe/syncookie` |
+| `xs_policy` | ARRAY(1) | 0 → flags (mitigate, syncookie, services, fragments), pps, burst | `sentinelctl policy` (phase 2 only) |
+| `xs_allow`, `xs_allow6` | LPM_TRIE | {32+len, tenant, src} → {expires_ns (0 = permanent), reason} | `sentinelctl allow` |
+| `xs_block`, `xs_block6` | LPM_TRIE | same → {expires_ns (> 0), reason} | `sentinelctl block` |
+| `xs_services` | HASH | {asset, proto, port (0 = all)} → 1 | `sentinelctl service` |
+| `xs_rl` | LRU_HASH(262144) | {tenant, addr (v4-mapped; v6 /64)} → {tokens·1e9, last_ns} | XDP |
+| `xs_verified` | LRU_HASH(262144) | {tenant, addr} → expires_ns | XDP (`gc` cleans) |
+| `xs_stats` | PERCPU_HASH(65536) | {tenant, verdict} → {pkts, bytes} | XDP |
+
+All times are CLOCK_BOOTTIME ns; expiry is enforced inside XDP
+([ADR 0011](adr/0011-expiry-and-fail-open.md)).
 
 ### ABI
 
