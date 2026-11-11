@@ -2,6 +2,7 @@
 //! `sentinel-worker`: attack detection and signed mitigation decisions
 //! (spec section 8, ADR 0021).
 
+mod clickhouse;
 mod config;
 mod detect;
 mod run;

@@ -45,6 +45,11 @@ pub async fn connect(cfg: &Config) -> Result<async_nats::Client> {
 }
 
 pub async fn run(cfg: Config, key: SigningKey) -> Result<()> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let sink = match &cfg.clickhouse {
+        Some(ch) => Some(crate::clickhouse::start(ch.clone())?),
+        None => None,
+    };
     let nats = connect(&cfg).await?;
     let det: Shared = Arc::new(Mutex::new(Detector::new(
         &cfg.worker.id,
@@ -78,7 +83,7 @@ pub async fn run(cfg: Config, key: SigningKey) -> Result<()> {
     }
     // Telemetry shards, one queue group per shard.
     for shard in 0..cfg.worker.shards {
-        let (nats, det) = (nats.clone(), det.clone());
+        let (nats, det, sink) = (nats.clone(), det.clone(), sink.clone());
         tokio::spawn(async move {
             let subject = format!("telemetry.*.{shard}");
             let group = format!("workers.shard.{shard}");
@@ -87,7 +92,12 @@ pub async fn run(cfg: Config, key: SigningKey) -> Result<()> {
                     Ok(mut sub) => {
                         while let Some(m) = sub.next().await {
                             match serde_json::from_slice::<FlowBatch>(&m.payload) {
-                                Ok(b) => det.lock().expect("detector").on_flows(&b),
+                                Ok(b) => {
+                                    det.lock().expect("detector").on_flows(&b);
+                                    if let Some(s) = &sink {
+                                        s.push(b.flows);
+                                    }
+                                }
                                 Err(e) => warn!("bad telemetry: {e}"),
                             }
                         }

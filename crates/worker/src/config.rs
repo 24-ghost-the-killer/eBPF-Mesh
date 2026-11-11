@@ -19,6 +19,9 @@ pub struct Config {
     pub detect: DetectCfg,
     #[serde(default)]
     pub mitigate: MitigateCfg,
+    /// Optional: store flows for traffic history (ADR 0024).
+    #[serde(default)]
+    pub clickhouse: Option<crate::clickhouse::ClickHouseCfg>,
 }
 
 #[derive(Debug, Deserialize)]
