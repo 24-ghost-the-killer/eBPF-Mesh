@@ -1,0 +1,36 @@
+# Sentinel-Edge PoP agent configuration (example; copy and adapt).
+# Real configs are git-ignored (*.local.toml) and secrets live in files
+# referenced from here, never in this file.
+
+[pop]
+id = "lab1"                       # NATS subject token: a-z, 0-9, '-'
+region = "lab"
+iface = "eth0"                    # uplink NIC (native XDP)
+pop_ip4 = "10.10.1.1"             # PoP unicast address (BGP, SSH, NATS)
+# pop_ip6 = "2001:db8:10::1"
+tunnel_ep4 = "198.51.100.1"       # anycast endpoint for origin replies
+nexthop_mac = "02:00:00:00:00:01" # uplink router; omit to reply to sender
+
+[xdp]
+object = "/usr/lib/sentinel/xdp_main.o"
+pin_dir = "/sys/fs/bpf/sentinel"
+mode = "native"
+allow_generic = false
+
+[nats]
+url = "tls://nats.mgmt.example:4222"
+ca = "/etc/sentinel/nats-ca.pem"
+nkey_seed_file = "/etc/sentinel/lab1.nk"   # secret, mode 0600
+
+[telemetry]
+shards = 16                       # telemetry.<pop>.0 .. 15
+sample_base = 1                   # 1 in N packets normally (raise on busy PoPs)
+sample_max = 65536
+target_events_per_sec = 20000     # sample less above this
+
+[agent]
+heartbeat_file = "/run/sentinel/heartbeat"
+metrics_listen = "127.0.0.1:9466"
+stats_interval_ms = 1000
+health_interval_s = 5
+gc_interval_s = 10
