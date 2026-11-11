@@ -45,6 +45,7 @@ listen = "127.0.0.1:8080"
 public_url = "$PORTAL"
 cookie_secure = true          # browsers treat http://localhost as secure
 trust_proxy = true            # behind the edge proxy
+status_page_origins = ["http://localhost:3100"]
 [webhooks]
 allow_http = true             # lab: the webhook sink is plain HTTP on loopback
 allow_private_targets = true
@@ -95,6 +96,18 @@ inb curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/login | grep -q
 	pass "PostgreSQL, API, NATS, agent, web app and edge proxy running" ||
 	{ fail "web app not reachable"; tail -20 "$WORK/web.log" "$WORK/edge.log"; finish; }
 
+# ---- the separately hosted status page (static files on another origin) ------------------
+cp -R "$REPO/status-page" "$WORK/status-page"
+cat >"$WORK/status-page/config.js" <<JS
+window.SENTINEL_STATUS = { api: "$PORTAL/api/v1/status", portal: "$PORTAL", refreshSeconds: 5 };
+JS
+cat >"$WORK/status-page/incidents.json" <<JSON
+[{"date": "2026-01-01", "title": "Lab maintenance", "status": "resolved", "text": "Example incident for the tests."}]
+JSON
+nsenter --net="/run/netns/$NS_B" python3 -m http.server 3100 --bind 127.0.0.1 \
+	--directory "$WORK/status-page" >"$WORK/status-page.log" 2>&1 &
+BG_PIDS+=($!)
+
 # ---- hook for the browser tests -------------------------------------------------------------
 HOOK="$WORK/lab-hook.sh"
 cat >"$HOOK" <<HOOK
@@ -139,7 +152,7 @@ CLEANUP_CMDS+=("[ -f '$WORK/hook.pids' ] && xargs -r kill <'$WORK/hook.pids' 2>/
 E2E_OUT="$WORK/e2e-results"
 set +e
 (cd "$REPO/tests/e2e" &&
-	PORTAL_URL="$PORTAL" MAIL_DIR="$WORK/mail" LAB_HOOK="$HOOK" E2E_OUT="$E2E_OUT" \
+	PORTAL_URL="$PORTAL" STATUS_PAGE_URL=http://localhost:3100 MAIL_DIR="$WORK/mail" LAB_HOOK="$HOOK" E2E_OUT="$E2E_OUT" \
 	LAB_ORIGIN="$ORIGIN" LAB_CLIENT="$CLIENT" TUNNEL_DEV="${SENTINEL_TEST_TUNNEL_DEV:-}" \
 	nsenter --net="/run/netns/$NS_B" pnpm exec playwright test ${E2E_GREP:+--grep "$E2E_GREP"} 2>&1 |
 	tee "$WORK/playwright.log")
