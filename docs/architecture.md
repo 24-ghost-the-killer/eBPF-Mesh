@@ -27,7 +27,7 @@ Browser -> Web app (Next.js) -> Control-plane API (axum)
 - The packet path never waits for userspace. Every dynamic mitigation has a
   TTL enforced inside XDP.
 
-## Dataplane (phases 1-3)
+## Dataplane (phases 1-4)
 
 ### Pipeline
 
@@ -48,6 +48,7 @@ frame
  │   SYN cookies ───── unverified SYN ──────────► TX_SYN_CHALLENGE (XDP_TX)
  │                     RST with valid cookie ───► SYN_VERIFIED (consumed)
  │                     other TCP, unverified ───► DROP_UNVERIFIED  [policy]
+ │ 9 sample ────────── 1 in N, any verdict ─────► xs_events ring buffer
  │10 deliver ───────── IPIP / 6in4 to origin ───► XDP_TX (verdict kept)
  │                     too big / no PoP IP ─────► DROP_TOO_BIG / DROP_TUNNEL
 ```
@@ -55,7 +56,7 @@ frame
 [global] drops are suspended only by the kill switch (`XS_CFG_F_OBSERVE`).
 [policy] drops and challenges happen only when the asset's policy has
 `XS_P_MITIGATE`; otherwise (observe mode, the default) the verdict is counted
-and the packet is still delivered. Step 9 (sampling) arrives with the agent.
+and the packet is still delivered.
 
 The main program parses, looks up the asset and dispatches; policy
 evaluation, delivery, the return path and MSS clamping are global BPF
@@ -110,7 +111,7 @@ Trailing Ethernet padding (IP length shorter than the frame) is valid.
 
 | Map | Type | Key → Value | Written by |
 |---|---|---|---|
-| `xs_cfg` | ARRAY(1) | 0 → kill switch, PoP IPv4/IPv6, tunnel endpoint, next-hop MAC, uplink MTU, SYN-cookie key, verify TTL | `sentinelctl attach/config/observe/syncookie` |
+| `xs_cfg` | ARRAY(1) | 0 → kill switch, PoP IPv4/IPv6, tunnel endpoint, next-hop MAC, uplink MTU, sample rate, SYN-cookie key, verify TTL | `sentinelctl attach/config/observe/syncookie` |
 | `xs_tenants`, `xs_tenants6` | LPM_TRIE | protected prefix → asset {tenant, id, origin, policy {flags, pps, burst}} | `sentinelctl asset/policy` |
 | `xs_allow`, `xs_allow6` | LPM_TRIE | {32+len, tenant, src} → {expires_ns (0 = permanent), reason} | `sentinelctl allow` |
 | `xs_block`, `xs_block6` | LPM_TRIE | same → {expires_ns (> 0), reason} | `sentinelctl block` |
@@ -118,6 +119,8 @@ Trailing Ethernet padding (IP length shorter than the frame) is valid.
 | `xs_rl` | LRU_HASH(262144) | {tenant, addr (v4-mapped; v6 /64)} → {tokens·1e9, last_ns} | XDP |
 | `xs_verified` | LRU_HASH(262144) | {tenant, addr} → expires_ns | XDP (`gc` cleans) |
 | `xs_stats` | PERCPU_HASH(65536) | {tenant, verdict} → {pkts, bytes} | XDP |
+| `xs_events` | RINGBUF(4 MiB) | 64-byte `xs_event` per sampled packet | XDP (agent reads) |
+| `xs_counters` | PERCPU_ARRAY | events lost (ring buffer full) | XDP |
 
 All times are CLOCK_BOOTTIME ns; expiry is enforced inside XDP
 ([ADR 0011](adr/0011-expiry-and-fail-open.md)).
@@ -142,6 +145,32 @@ $SENTINEL_PIN_DIR (default /sys/fs/bpf/sentinel)
 pins it. The program stays attached after the CLI exits and cannot be silently
 replaced. `detach` detaches the link, removes its pin, and removes the map pins
 once no interface uses them. See [ADR 0007](adr/0007-loader-and-attachment.md).
+
+## PoP agent (phase 4)
+
+```
+            NATS (TLS, nkey user "pop <id>")
+   KV tenants/services/rules/platform ──watch──┐      ┌──► config.ack.<pop>
+                                               ▼      │──► stats.<pop>         (1 s)
+ sentinel-agent ─── reconcile maps ──► xs_tenants*, xs_services, xs_allow*/block*, xs_cfg
+      │                                                │──► telemetry.<pop>.<shard> (1 s, flows)
+      ├─ ring buffer thread ◄── xs_events              │──► health.<pop>        (5 s)
+      ├─ heartbeat file, Prometheus /metrics           └──► (decision.global: phase 7)
+      └─ gc every 10 s, adaptive sample rate
+```
+
+- **Config flow:** each bucket is watched ("last value per key"). After the
+  initial snapshot and after every change the agent rebuilds the maps that
+  bucket owns and acknowledges the change (ADR 0015).
+- **Telemetry:** sampled events are aggregated per second into flows keyed by
+  (tenant, src, dst, proto, dport, verdict), scaled by the sample rate, and
+  published per shard of the source /24 or /48. When events per second exceed
+  the target the sampling divisor goes up; it comes back down when quiet.
+- **Failure behaviour:** a crashed agent leaves XDP attached with the last
+  state; time-limited entries keep expiring in XDP. A restarted agent adopts
+  the attachment and resyncs. SIGTERM detaches (spec), `--keep-attached`
+  doesn't (upgrades).
+- **Security:** see ADR 0014.
 
 ## Decisions
 

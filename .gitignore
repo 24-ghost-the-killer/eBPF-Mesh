@@ -2,3 +2,7 @@
 /build
 .env
 *.local.toml
+# NATS nkey seeds and other secrets
+*.nk
+*.pem
+*.key

@@ -7,7 +7,9 @@
 - Rust (version pinned in `rust-toolchain.toml`; rustup picks it up)
 - Kernel 5.18+ for `bpf_xdp_load_bytes`/`store_bytes` (6.x recommended)
 - For tests: `iproute2` (with libbpf support for `ip link ... xdp obj`),
-  `iputils-ping`, `jq`, `curl`, `ethtool`, `python3`, `nsenter` (util-linux)
+  `iputils-ping`, `jq`, `curl`, `ethtool`, `openssl`, `python3`, `nsenter`
+  (util-linux), `nats-server` and `nats` (`deploy/docker/install-nats.sh`
+  installs the pinned versions)
 - bpffs mounted at `/sys/fs/bpf` (systemd does this; otherwise
   `mount -t bpf bpf /sys/fs/bpf`)
 
@@ -16,8 +18,8 @@
 ```sh
 make                         # build/ebpf/xdp_main.o + target/debug/sentinelctl
 make test                    # cargo fmt --check, clippy -D warnings, cargo test
-sudo make test-bpf           # 270 BPF_PROG_TEST_RUN checks
-sudo make test-integration   # veth_counts, tunnel, policy_live, synflood
+sudo make test-bpf           # 284 BPF_PROG_TEST_RUN checks
+sudo make test-integration   # veth_counts, tunnel, policy_live, synflood, agent_kv
 ```
 
 `sudo make test-integration` does not build the Rust binaries (cargo is
@@ -28,6 +30,7 @@ usually not on root's PATH), so run `make` as your normal user first.
 | `veth_counts.sh` | native attach, exact per-verdict counters, generic refused, clean detach |
 | `tunnel.sh` | phase 3 acceptance: delivery through the tunnel, the origin sees the real client IP, tunnel return and DSR, 1 MiB both ways, oversize counted, MSS clamp rescues a wrong customer MTU |
 | `policy_live.sh` | rate limit, block/allow with TTL and gc, observe vs mitigate, kill switch, services, PoP traffic bypass |
+| `agent_kv.sh` | phase 4 acceptance: `nats kv put` configures a live PoP; KV policy/services/rules enforced and acked; bad documents rejected safely; stats, telemetry, health, heartbeat, metrics; NATS permissions and TLS; crash, resync, clean stop |
 | `synflood.sh` | phase 2 acceptance: a spoofed SYN flood never reaches the server while `curl` succeeds; control run in observe mode |
 
 ### On macOS
@@ -108,6 +111,54 @@ want dropped, then `policy set --asset <id> --mitigate on`. With SYN cookies
 on, observe mode counts all non-SYN TCP as `drop_unverified` (nothing is
 verified without challenges), so judge those counters only after switching on.
 
+## Running a PoP with sentinel-agent
+
+1. **NATS** (management network, TLS): create a CA and server certificate,
+   one nkey per PoP (`sentinel-agent nkey generate --out lab1.nk` prints the
+   public key), and render the server config:
+
+   ```sh
+   deploy/nats/render-config.py --listen 0.0.0.0:4222 --cert server.pem \
+       --key server.key --store /var/lib/nats --admin UADMIN... \
+       --pop lab1=ULAB1... > nats.json
+   nats-server -c nats.json
+   for b in tenants services rules platform; do nats kv add $b --history 5; done
+   ```
+
+2. **Agent**: copy `configs/agent.example.toml`, set the PoP id, interface,
+   addresses, NATS URL, CA and seed file, then
+   `sentinel-agent check-config --config pop.toml` and
+   `sentinel-agent run --config pop.toml` (as root; systemd units come with
+   phase 8). The agent attaches XDP itself.
+
+3. **Configure through KV** (until the API exists, with the `nats` CLI and
+   admin credentials):
+
+   ```sh
+   nats kv put tenants asset.1 '{"v":1,"version":1,"asset":1,"tenant":42,
+     "prefix":"198.51.100.10/32","origin":"192.0.2.10",
+     "policy":{"mode":"mitigate","syncookies":true,"enforce_services":true}}'
+   nats kv put services asset.1 '{"v":1,"version":1,"services":[{"proto":"tcp","port":443}]}'
+   nats kv put rules tenant.42 '{"v":1,"version":1,"block":[{"prefix":"203.0.113.0/24","expires_at":1762790405000}]}'
+   nats kv put platform global '{"v":1,"version":1,"observe":true}'   # kill switch
+   nats sub 'config.ack.>'        # every change is acknowledged per PoP
+   ```
+
+   The full schema is in ADR 0015. `sentinelctl asset script 1` still
+   generates the customer's tunnel script from the applied state.
+
+While the agent runs it owns assets, services, rules and the kill switch:
+`sentinelctl` changes to those are overwritten at the next resync (it warns).
+Read-only `sentinelctl` commands (`stats`, `asset list`, `config show`, ...)
+are always fine.
+
+| Agent output | Where |
+|---|---|
+| acknowledgements | `config.ack.<pop>` |
+| counters + rates, every second | `stats.<pop>` and `http://127.0.0.1:9466/metrics` |
+| sampled flows, every second | `telemetry.<pop>.<shard>` |
+| health, every 5 s | `health.<pop>` and the heartbeat file |
+
 ## sentinel-gen (lab traffic generator)
 
 ```sh
@@ -158,4 +209,7 @@ XDP sees it (rx-vlan offload). On a PoP with tagged uplinks, disable it:
 | `drop_tunnel` | no PoP IPv4 configured (`config set --pop-ip4`) |
 | `drop_too_big` | packets above uplink MTU − 20; check the customer's MSS / tunnel MTU 1480 |
 | `drop_return` | replies from an unregistered origin, or with a source that is not that origin's asset |
+| `rejected: ...` in the agent log / `"ok":false` acks | the KV document failed validation; the previous state is kept |
+| agent: `KV sync stopped ... retrying` | NATS unreachable or bucket missing; XDP keeps the last state |
+| `sampled_events_lost` rising | ring buffer full: raise `sample_base` |
 | customer sees nothing in the tunnel | provider filters IP protocol 4/41, or rp_filter on the origin; the script turns rp_filter off |

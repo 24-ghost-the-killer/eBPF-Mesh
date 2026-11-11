@@ -15,9 +15,9 @@ ASNs. Nothing here is meant to touch the real internet yet.
 |---|---|---|
 | 1 | Foundation: repo, CI, XDP parser + per-CPU counters, `sentinelctl` attach/detach/stats | done |
 | 2 | Filtering: bogons, allow/blocklists, services, rate limit, SYN cookies, observe/mitigate | done |
-| 3 | Tenants and IPIP tunnel delivery, return path, customer script, MTU/MSS | **done** |
-| 4 | PoP agent and NATS | next |
-| 5 | Control-plane API and PostgreSQL | |
+| 3 | Tenants and IPIP tunnel delivery, return path, customer script, MTU/MSS | done |
+| 4 | PoP agent and NATS: KV config with acks, stats, telemetry, health | **done** |
+| 5 | Control-plane API and PostgreSQL | next |
 | 6 | Portal v1 | |
 | 7 | Analysis workers and signed decisions | |
 | 8 | Anycast lab (containerlab + BIRD) | |
@@ -37,6 +37,7 @@ ASNs. Nothing here is meant to touch the real internet yet.
   7. allowed services (proto + port), fragment policy → drop the rest
   8. per-source token bucket (IPv6 per /64), then SYN-cookie source
      verification ([ADR 0009](docs/adr/0009-syncookie-source-verification.md))
+  9. **sample** 1 in N packets (any verdict) into a ring buffer for telemetry
   10. **deliver**: IPIP (IPv4) or 6in4 (IPv6) to the customer's server, `XDP_TX`
 
   Origins' replies come back through the tunnel to an anycast endpoint; the
@@ -44,6 +45,14 @@ ASNs. Nothing here is meant to touch the real internet yet.
   forwards them ([ADR 0012](docs/adr/0012-tunnel-delivery-and-return.md)).
   New assets start in **observe** mode: verdicts are counted, everything is
   still delivered. A global kill switch suspends all drops.
+- **`sentinel-agent`** (one per PoP): attaches XDP, applies the NATS KV
+  buckets (`tenants`, `services`, `rules`, `platform`) to the maps and
+  acknowledges every change on `config.ack.<pop>`; publishes `stats.<pop>`,
+  sampled flows on `telemetry.<pop>.<shard>` and `health.<pop>`; writes the
+  heartbeat file; serves Prometheus metrics; adapts the sampling rate;
+  garbage-collects expired entries. NATS with TLS and one nkey user per
+  component ([ADR 0014](docs/adr/0014-nats-users-and-permissions.md),
+  [ADR 0015](docs/adr/0015-kv-schema-and-agent-ownership.md)).
 - **`sentinelctl`**: attach/detach (native XDP, pinned `bpf_link`), stats,
   assets (`asset add/del/list/script`), per-asset policy and services,
   allow/block rules with TTL, PoP config, SYN-cookie key rotation, gc.
@@ -53,12 +62,18 @@ ASNs. Nothing here is meant to touch the real internet yet.
   sources; refuses anything outside the lab ranges.
 - **Shared ABI** (`ebpf/include/abi.h` ⇄ `crates/common/src/abi.rs`), checked
   for drift by a Rust test that parses the header.
-- **Tests**: 270 `BPF_PROG_TEST_RUN` checks (verdicts, exact counters, exact
-  output bytes for SYN challenges, tunnel encapsulation and the return path
-  with MSS clamping), 4 veth/netns suites with real traffic, 46 Rust unit
-  tests, CI.
+- **Tests**: 284 `BPF_PROG_TEST_RUN` checks (verdicts, exact counters, exact
+  output bytes for SYN challenges, tunnel encapsulation, the return path with
+  MSS clamping, sampled events), 5 veth/netns suites with real traffic, 66
+  Rust unit tests, CI.
 
 Acceptance tests:
+- phase 4 (`tests/integration/agent_kv.sh`): with NATS (TLS, nkeys) and the
+  agent running, `nats kv put tenants asset.1 ...` makes the protected IP
+  work within a second, nothing restarted; policy, services and block rules
+  from KV are enforced and acknowledged; a bad document is rejected without
+  touching traffic; a killed agent leaves XDP protecting and resyncs on
+  restart.
 - phase 3 (`tests/integration/tunnel.sh`): a client's HTTP request crosses the
   PoP into an IPIP tunnel; the origin's server log shows the real client IP;
   replies return through the tunnel (or DSR); 1 MiB transfers in both
@@ -102,16 +117,21 @@ ebpf/include/abi.h        shared kernel/userspace structs and constants
 ebpf/src/                 XDP program: parse.h, policy.h, syncookie.h, cookie.h,
                           tunnel.h, maps.h
 crates/common             ABI mirror, pin layout, prefixes, lab ranges, stats
+crates/bpf                Linux access to the XDP program (attach, maps, rules, stats)
 crates/ctl                sentinelctl (operator CLI)
+crates/agent              sentinel-agent (PoP agent)
 crates/gen                sentinel-gen (lab traffic generator)
-crates/{agent,worker,api} placeholders for phases 4, 7, 5
+crates/{worker,api}       placeholders for phases 7, 5
 tests/bpf                 BPF_PROG_TEST_RUN harness, parser and policy suites
-tests/integration         veth/netns suites (counts, tunnel, live policy, SYN flood)
-deploy/docker             development/test image
+tests/integration         veth/netns suites (counts, tunnel, live policy, SYN flood,
+                          agent + NATS)
+deploy/docker             development/test image (+ pinned NATS install script)
+deploy/nats               NATS server config renderer (users, permissions, TLS)
+configs/                  example agent configuration
 docs/                     architecture, runbook, ADRs
 ```
 
-## Known limitations (after phase 3)
+## Known limitations (after phase 4)
 
 - Packets that do not fit the uplink MTU after the 20-byte tunnel header are
   dropped (`drop_too_big`); ICMP "fragmentation needed"/"packet too big"
@@ -125,8 +145,9 @@ docs/                     architecture, runbook, ADRs
   `drop_unverified`.
 - An expired longer prefix shadows an active shorter one until `gc` runs
   ([ADR 0011](docs/adr/0011-expiry-and-fail-open.md)).
-- Configuration is applied with `sentinelctl`; the agent (phase 4) will apply
-  it from NATS KV.
+- Nothing writes KV yet except operators with the `nats` CLI; the API
+  (phase 5) will. Decisions (`decision.global`) arrive in phase 7.
+- Health reports BGP as "n/a" until the BIRD integration (phase 8).
 
 ## License
 

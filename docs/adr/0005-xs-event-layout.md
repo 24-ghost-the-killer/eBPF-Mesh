@@ -1,6 +1,6 @@
 # 0005 Explicit padding and an IPv6 variant for `xs_event`
 
-**Status:** Proposed (implemented in phase 4)
+**Status:** Accepted (implemented in phase 4: a single 64-byte `xs_event` with IPv4-mapped addresses, a family field and the sample rate)
 
 **Context.** The `xs_event` struct in spec §5.3 is 30 bytes of fields, which
 the compiler pads to 32. Implicit padding breaks the "no implicit holes" ABI
