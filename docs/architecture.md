@@ -238,6 +238,18 @@ agents ── stats.<pop> ───────────────┬─►
 
 See ADR 0021 (detection, signing, trust, merging) and ADR 0022 (webhooks).
 
+## Anycast and operations (phase 8)
+
+```
+ bot/client-N ── region-N (AS 6500N) ── pop-N (AS 65010: BIRD + XDP + agent)
+                    │ full mesh │            │ health check: withdraw when
+ origin-1 ── region-1           region-2/3   │ XDP or agent unhealthy
+                                             │ drain: AS path prepend (KV)
+ workers ── flows ──► ClickHouse traffic_1m ──► API /traffic ──► portal
+```
+
+See ADR 0023 (lab, drain, health) and ADR 0024 (ClickHouse).
+
 ## Decisions
 
 See [docs/adr/](adr/).

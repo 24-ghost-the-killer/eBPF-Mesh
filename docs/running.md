@@ -205,6 +205,41 @@ endpoints regenerate the snapshot with
 `UPDATE_OPENAPI=1 cargo test -p sentinel-api --test openapi`, then the web
 client with `pnpm --filter web gen:api`.
 
+## The anycast lab (containerlab)
+
+```sh
+make lab-up          # build, generate lab/state, deploy 19 nodes, init NATS/ClickHouse
+make lab-test        # deploy + acceptance test + destroy (KEEP=1 keeps it running)
+make lab-down
+```
+
+- Runs on the host's Docker (Docker Desktop on a Mac): needs about 2 GB of
+  memory and pulls `clickhouse/clickhouse-server:25.8.33.6`; builds the
+  `sentinel-lab` image. Nodes are `clab-sentinel-<name>`:
+  `docker exec clab-sentinel-region-2 birdc -s /run/bird/bird.ctl show route`.
+- The API listens on http://172.31.250.13:8080 (reachable from the Docker
+  host); logs of every daemon are in `lab/state/logs/`, mails in
+  `lab/state/mail/`.
+- Address plan and links: header of `lab/topology.clab.yml`.
+
+## Operating a PoP: health check and draining
+
+- Install `deploy/health/sentinel-health.sh` to `/usr/lib/sentinel/`, the
+  units from `deploy/systemd/`, and `/etc/sentinel/health.env` with
+  `XS_IFACE=<uplink>` (optional `XS_HEARTBEAT`, `XS_MAX_AGE`, `BIRDC`,
+  `XS_PROTOCOLS`); `systemctl enable --now sentinel-health.timer`.
+- BIRD includes `/etc/bird/drain.conf` and prepends the AS path when
+  `DRAIN = 1` (see `lab/bird/pop-1.conf`); give the agent a `[bird]`
+  section. Drain from the admin panel (PoPs) or
+  `POST /api/v1/admin/pops/<id>/drain {"drain": true}`.
+
+## ClickHouse
+
+Apply `migrations/clickhouse/0001_flows.sql`, create users like
+`0002_users.example.sql`, then configure `[clickhouse]` in the worker
+(writer) and API (reader) configs; passwords via
+`SENTINEL_CLICKHOUSE_PASSWORD`.
+
 ## Running an analysis worker
 
 ```sh

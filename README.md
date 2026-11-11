@@ -19,9 +19,9 @@ ASNs. Nothing here is meant to touch the real internet yet.
 | 4 | PoP agent and NATS: KV config with acks, stats, telemetry, health | done |
 | 5 | Control-plane API and PostgreSQL: auth, 2FA, roles, RLS, assets, policy, rules, audit | done |
 | 6 | Portal v1: login, 2FA with passkeys, live overview, protected IPs with tunnel script/test, rules | done |
-| 7 | Analysis workers: detection, signed decisions, attacks pages, webhooks | **done** |
-| 8 | Anycast lab (containerlab + BIRD) | next |
-| 9 | Public website | |
+| 7 | Analysis workers: detection, signed decisions, attacks pages, webhooks | done |
+| 8 | Anycast lab: containerlab + BIRD, health check, drain, ClickHouse history, admin panel | **done** |
+| 9 | Public website | next |
 
 ## What exists today
 
@@ -75,6 +75,13 @@ ASNs. Nothing here is meant to touch the real internet yet.
   HTTP, email; SSRF-protected) and lets platform admins sign their own
   decisions ([ADR 0021](docs/adr/0021-detection-and-signed-decisions.md),
   [ADR 0022](docs/adr/0022-webhooks.md)).
+- **Anycast lab** (`lab/`, containerlab): three BIRD regions, three PoPs
+  (BIRD + XDP + agent + health check), customer server, clients and bots,
+  NATS, PostgreSQL, ClickHouse, API and two workers. PoPs withdraw the
+  anycast route when XDP or the agent is unhealthy and can be drained from
+  the admin panel (AS-path prepending); workers store flows in ClickHouse
+  for per-PoP traffic history ([ADR 0023](docs/adr/0023-anycast-lab-drain-health.md),
+  [ADR 0024](docs/adr/0024-traffic-history-clickhouse.md)).
 - **Portal** (`web/`, Next.js + Tailwind + shadcn/ui-style components +
   Recharts): signup, email verification, login, password reset, 2FA with
   passkeys or an authenticator app; an overview with a live graph over
@@ -83,7 +90,9 @@ ASNs. Nothing here is meant to touch the real internet yet.
   **tunnel test** run by every PoP through the real tunnel; a rules page with
   observe/mitigate, allowed services, rate limits, SYN cookies and
   allow/block lists; attacks list and detail (graph, top sources, blocked
-  sources), active attacks on the overview, attack notifications. Client
+  sources), active attacks on the overview, attack notifications, traffic
+  history per PoP, and an admin panel (PoP health and drain, kill switch,
+  tenants, decisions, signing keys). Client
   generated from the OpenAPI document; one origin
   with the API; CSP with nonces and the other security headers; keyboard
   accessible, responsive, dark and light
@@ -106,6 +115,12 @@ ASNs. Nothing here is meant to touch the real internet yet.
   PostgreSQL, Vitest, Playwright browser tests against the full lab, CI.
 
 Acceptance tests:
+- phase 8 (`make lab-test`, `lab/scripts/acceptance.sh`): in the
+  containerlab lab, each region's bot reaches its own PoP (ClickHouse
+  flows); draining pop-2 from the admin API, killing pop-3's agent and
+  crashing the pop-1 container each move traffic to another PoP while
+  clients in all three regions keep getting answers (0 failed requests in
+  the reference run); per-PoP history comes from ClickHouse.
 - phase 7 (`tests/e2e/attack.spec.ts`): after a customer's normal setup
   (passkey, webhook, protected IP, tunnel, mitigate), a UDP flood from 8 lab
   bots is detected by the worker within seconds; signed decisions block the
@@ -199,14 +214,18 @@ tests/bpf                 BPF_PROG_TEST_RUN harness, parser and policy suites
 tests/api                 throwaway PostgreSQL for the API tests
 tests/integration         veth/netns suites (counts, tunnel, live policy, SYN flood,
                           agent + NATS, API end to end, portal end to end)
-tests/e2e                 Playwright browser tests (onboarding, auth, isolation)
-deploy/docker             development/test images (+ pinned NATS and Node installers)
+tests/e2e                 Playwright browser tests (onboarding, attacks, admin, auth,
+                          isolation, accessibility)
+lab/                      containerlab anycast lab: topology, BIRD configs, scripts
+migrations/clickhouse     flows + traffic_1m
+deploy/docker             development/test images (+ pinned NATS, Node, containerlab installers)
+deploy/health, systemd    PoP health check (timer), agent unit
 deploy/nats               NATS server config renderer (users, permissions, TLS)
 configs/                  example agent and API configuration
 docs/                     architecture, runbook, ADRs
 ```
 
-## Known limitations (after phase 7)
+## Known limitations (after phase 8)
 
 - Packets that do not fit the uplink MTU after the 20-byte tunnel header are
   dropped (`drop_too_big`); ICMP "fragmentation needed"/"packet too big"
@@ -220,8 +239,11 @@ docs/                     architecture, runbook, ADRs
   `drop_unverified`.
 - An expired longer prefix shadows an active shorter one until `gc` runs
   ([ADR 0011](docs/adr/0011-expiry-and-fail-open.md)).
-- The portal has no members/API-key/audit screens or admin panel yet (admin:
-  phase 8); the API endpoints exist (also for decisions and signing keys).
+- The portal has no members/API-key/audit screens yet (the API endpoints
+  exist).
+- The lab is IPv4 only and runs on one Docker host; Ansible provisioning of
+  real PoPs is not written yet (systemd units and the health check are).
+  ClickHouse traffic counts are sampled estimates.
 - Detection is statistical (no ML). Only block decisions exist (no per-source
   rate-limit decisions). With several workers, the SYN-rate and new-source
   signals are per worker (volume is exact). Spoofed floods are left to SYN
@@ -234,8 +256,8 @@ docs/                     architecture, runbook, ADRs
 - `web/scripts/edge.mjs` is a development/test proxy; production needs a
   TLS reverse proxy (deployment arrives in phase 8). Mail is file/log only
   (no SMTP yet).
-- PoP draining and per-PoP history (ClickHouse) arrive in phase 8.
-- Health reports BGP as "n/a" until the BIRD integration (phase 8).
+- Health reports BGP as "n/a" (the health check talks to BIRD; the agent
+  does not read BGP state yet).
 
 ## License
 

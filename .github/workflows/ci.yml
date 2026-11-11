@@ -4,6 +4,12 @@ name: ci
 on:
   push:
   pull_request:
+  workflow_dispatch:
+    inputs:
+      lab:
+        description: "Also run the containerlab anycast lab (about 10 minutes)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -64,4 +70,22 @@ jobs:
         with:
           name: e2e-artifacts
           path: build/e2e-artifacts
+          if-no-files-found: ignore
+
+  anycast-lab:
+    # Started by hand (Actions -> ci -> Run workflow, "lab" ticked).
+    if: github.event_name == 'workflow_dispatch' && inputs.lab
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the test image
+        run: make docker-image
+      - name: Anycast lab acceptance (containerlab on the runner's Docker)
+        run: make lab-test
+      - name: Keep lab logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lab-logs
+          path: lab/state/logs
           if-no-files-found: ignore
