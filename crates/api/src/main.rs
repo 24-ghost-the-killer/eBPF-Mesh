@@ -45,6 +45,30 @@ enum Cmd {
     },
     /// Print the OpenAPI document.
     Openapi,
+    /// Trust or revoke a decision issuer (workers). Uses SENTINEL_DATABASE_URL;
+    /// a running API publishes the change to the PoPs.
+    SigningKey {
+        #[arg(long, env = "SENTINEL_API_CONFIG")]
+        config: PathBuf,
+        #[command(subcommand)]
+        cmd: KeyCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum KeyCmd {
+    /// Register an issuer's public key (`sentinel-worker key generate`).
+    Add {
+        #[arg(long)]
+        issuer: String,
+        #[arg(long)]
+        public_key: String,
+    },
+    /// Refuse every decision from this issuer from now on.
+    Revoke {
+        #[arg(long)]
+        issuer: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -98,6 +122,37 @@ fn main() -> Result<()> {
                     println!("platform admin {email} ready (enable 2FA before using admin endpoints)");
                     Ok(())
                 }
+                Cmd::SigningKey { config, cmd } => {
+                    let cfg = Config::load(&config)?;
+                    let pool = PgPoolOptions::new()
+                        .max_connections(1)
+                        .connect(&Config::env(&cfg.database.url_env)?)
+                        .await?;
+                    let scope = sentinel_api::db::Scope {
+                        admin: true,
+                        ..Default::default()
+                    };
+                    let mut tx = sentinel_api::db::begin(&pool, scope).await?;
+                    match cmd {
+                        KeyCmd::Add { issuer, public_key } => {
+                            sentinel_api::attacks::add_signing_key(&mut tx, &issuer, &public_key)
+                                .await?;
+                            sentinel_api::db::audit(&mut tx, None, None, "signing_key.add",
+                                serde_json::json!({"issuer": issuer, "by": "cli"}), None).await?;
+                            println!("issuer {issuer} trusted");
+                        }
+                        KeyCmd::Revoke { issuer } => {
+                            if !sentinel_api::attacks::revoke_signing_key(&mut tx, &issuer).await? {
+                                anyhow::bail!("no issuer {issuer}");
+                            }
+                            sentinel_api::db::audit(&mut tx, None, None, "signing_key.revoke",
+                                serde_json::json!({"issuer": issuer, "by": "cli"}), None).await?;
+                            println!("issuer {issuer} revoked");
+                        }
+                    }
+                    tx.commit().await?;
+                    Ok(())
+                }
                 Cmd::Openapi => unreachable!(),
             }
         })
@@ -112,7 +167,18 @@ async fn serve(cfg: Config) -> Result<()> {
     let data_key = crypto::DataKey::from_base64(&Config::env(&cfg.auth.data_key_env)?)?;
     let listen = cfg.server.listen;
     let mailer = Arc::from(mail::from_config(&cfg.mail));
-    let state = AppState::new(cfg, pool, mailer, data_key)?;
+    let decision_key = match std::env::var(&cfg.decisions.signing_key_env) {
+        Ok(seed) => Some(Arc::new(
+            sentinel_common::decision::signing_key_from_b64(&seed)
+                .map_err(|e| anyhow::anyhow!("{}: {e}", cfg.decisions.signing_key_env))?,
+        )),
+        Err(_) => {
+            tracing::info!("no decision signing key: admin decisions are disabled");
+            None
+        }
+    };
+    let mut state = AppState::new(cfg, pool, mailer, data_key)?;
+    state.decision_key = decision_key;
     start_nats(&state).await?;
     let listener = tokio::net::TcpListener::bind(listen)
         .await

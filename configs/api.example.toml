@@ -39,6 +39,16 @@ data_key_env = "SENTINEL_DATA_KEY"   # base64 of 32 random bytes
 mode = "log"                  # "file" (labs, tests) or "log"; SMTP later
 from = "noreply@example.org"
 
+[webhooks]
+allow_http = false            # https only (true for labs)
+allow_private_targets = false # SSRF protection: refuse private/loopback targets
+timeout_s = 5
+max_per_tenant = 10
+
+[decisions]
+issuer = "api"                          # name of the API's own decisions (admin panel)
+signing_key_env = "SENTINEL_DECISION_KEY"  # base64 Ed25519 seed; optional
+
 [nats]
 url = "tls://nats.mgmt.example.org:4222"
 ca = "/etc/sentinel/nats-ca.pem"

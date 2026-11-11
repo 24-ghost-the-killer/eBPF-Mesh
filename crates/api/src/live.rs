@@ -19,8 +19,8 @@ use serde::Serialize;
 use tracing::warn;
 use utoipa::ToSchema;
 
-use sentinel_common::abi::Verdict;
 use sentinel_common::msg::StatsMsg;
+use sentinel_common::stats::{traffic_class, TrafficClass};
 use sentinel_common::units::now_unix_ms;
 
 use crate::auth::{require, Caller, Role};
@@ -32,16 +32,45 @@ const STALE: Duration = Duration::from_secs(5);
 
 type Latest = HashMap<String, (Instant, Arc<StatsMsg>)>;
 
-/// Latest `stats.<pop>` message per PoP.
+/// Latest `stats.<pop>` message per PoP, and the active attacks per tenant.
 #[derive(Clone, Default)]
 pub struct LiveHub {
     pops: Arc<RwLock<Latest>>,
+    attacks: Arc<RwLock<HashMap<i64, Vec<ActiveAttack>>>>,
+}
+
+/// An attack in progress (spec 13.4: the overview shows them live).
+#[derive(Clone, Debug, Serialize, ToSchema, PartialEq)]
+pub struct ActiveAttack {
+    pub id: i64,
+    pub vector: String,
+    /// Unix ms.
+    pub started_at: i64,
+    pub pps: f64,
+    pub bps: f64,
+    pub peak_pps: f64,
+    /// Share of the attack traffic the PoPs drop (0..1).
+    pub dropped_ratio: f64,
 }
 
 impl LiveHub {
     pub fn update(&self, msg: StatsMsg) {
         let mut g = self.pops.write().expect("live hub lock");
         g.insert(msg.pop.clone(), (Instant::now(), Arc::new(msg)));
+    }
+
+    pub fn set_attack(&self, tenant: i64, a: ActiveAttack) {
+        let mut g = self.attacks.write().expect("live hub lock");
+        let v = g.entry(tenant).or_default();
+        v.retain(|x| x.id != a.id);
+        v.push(a);
+    }
+
+    pub fn clear_attack(&self, tenant: i64, id: i64) {
+        let mut g = self.attacks.write().expect("live hub lock");
+        if let Some(v) = g.get_mut(&tenant) {
+            v.retain(|x| x.id != id);
+        }
     }
 
     fn fresh(&self) -> Vec<Arc<StatsMsg>> {
@@ -80,11 +109,19 @@ impl LiveHub {
             .map(|(verdict, (pps, bps))| VerdictRate { verdict, pps, bps })
             .collect();
         verdicts.sort_by(|a, b| a.verdict.cmp(&b.verdict));
+        let attacks = self
+            .attacks
+            .read()
+            .expect("live hub lock")
+            .get(&tenant)
+            .cloned()
+            .unwrap_or_default();
         LiveFrame {
             ts: now_unix_ms(),
             total,
             pops,
             verdicts,
+            attacks,
         }
     }
 }
@@ -109,26 +146,24 @@ pub struct Rates {
 
 impl Rates {
     fn add(&mut self, verdict: &str, pps: f64, bps: f64) {
-        let Some(v) = Verdict::from_name(verdict) else {
-            return;
-        };
-        match v {
-            Verdict::TxReturn => {
+        let class = traffic_class(verdict);
+        match class {
+            TrafficClass::Return => {
                 self.return_pps += pps;
                 self.return_bps += bps;
-                return;
             }
-            Verdict::DropReturn | Verdict::PassLocal | Verdict::PassNonIp => return,
-            _ => {}
-        }
-        self.in_pps += pps;
-        self.in_bps += bps;
-        if v.is_drop() || v == Verdict::TxSynChallenge {
-            self.filtered_pps += pps;
-            self.filtered_bps += bps;
-        } else {
-            self.clean_pps += pps;
-            self.clean_bps += bps;
+            TrafficClass::Other => {}
+            TrafficClass::Clean | TrafficClass::Filtered => {
+                self.in_pps += pps;
+                self.in_bps += bps;
+                if class == TrafficClass::Filtered {
+                    self.filtered_pps += pps;
+                    self.filtered_bps += bps;
+                } else {
+                    self.clean_pps += pps;
+                    self.clean_bps += bps;
+                }
+            }
         }
     }
 
@@ -168,6 +203,8 @@ pub struct LiveFrame {
     pub pops: Vec<PopRates>,
     /// Non-zero rates per verdict (all PoPs).
     pub verdicts: Vec<VerdictRate>,
+    /// Attacks in progress.
+    pub attacks: Vec<ActiveAttack>,
 }
 
 /// Browsers send cookies with cross-site WebSocket handshakes only when
@@ -308,6 +345,23 @@ mod tests {
         let json = serde_json::to_string(&f).unwrap();
         assert!(!json.contains("5000") && !json.contains("9000"), "{json}");
         assert!(!f.verdicts.iter().any(|v| v.verdict == "drop_ratelimit"));
+
+        hub.set_attack(
+            7,
+            ActiveAttack {
+                id: 3,
+                vector: "udp_flood".into(),
+                started_at: 0,
+                pps: 1.0,
+                bps: 8.0,
+                peak_pps: 2.0,
+                dropped_ratio: 0.5,
+            },
+        );
+        assert_eq!(hub.frame(7).attacks.len(), 1);
+        assert!(hub.frame(8).attacks.is_empty(), "attacks are per tenant");
+        hub.clear_attack(7, 3);
+        assert!(hub.frame(7).attacks.is_empty());
 
         let none = hub.frame(1);
         assert_eq!(none.total, Rates::default());

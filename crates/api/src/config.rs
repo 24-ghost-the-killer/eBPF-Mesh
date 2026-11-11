@@ -27,6 +27,38 @@ pub struct Config {
     /// Without NATS the outbox keeps accumulating (and is published later).
     #[serde(default)]
     pub nats: Option<NatsCfg>,
+    #[serde(default)]
+    pub webhooks: WebhooksCfg,
+    #[serde(default)]
+    pub decisions: DecisionsCfg,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WebhooksCfg {
+    /// Allow http:// targets (labs only).
+    #[serde(default)]
+    pub allow_http: bool,
+    /// Allow targets that resolve to private, loopback or other
+    /// non-public addresses (labs only; SSRF protection otherwise).
+    #[serde(default)]
+    pub allow_private_targets: bool,
+    #[serde(default = "d_wh_timeout")]
+    pub timeout_s: u64,
+    #[serde(default = "d_wh_max")]
+    pub max_per_tenant: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DecisionsCfg {
+    /// Issuer name of the API's own decisions (admin panel).
+    #[serde(default = "d_dec_issuer")]
+    pub issuer: String,
+    /// Env var with the base64 Ed25519 seed; without it the API cannot issue
+    /// decisions (it still records the workers').
+    #[serde(default = "d_dec_env")]
+    pub signing_key_env: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -186,6 +218,37 @@ fn d_min_pw() -> usize {
 fn d_key_env() -> String {
     "SENTINEL_DATA_KEY".into()
 }
+fn d_wh_timeout() -> u64 {
+    5
+}
+fn d_wh_max() -> i64 {
+    10
+}
+fn d_dec_issuer() -> String {
+    "api".into()
+}
+fn d_dec_env() -> String {
+    "SENTINEL_DECISION_KEY".into()
+}
+
+impl Default for WebhooksCfg {
+    fn default() -> Self {
+        WebhooksCfg {
+            allow_http: false,
+            allow_private_targets: false,
+            timeout_s: d_wh_timeout(),
+            max_per_tenant: d_wh_max(),
+        }
+    }
+}
+impl Default for DecisionsCfg {
+    fn default() -> Self {
+        DecisionsCfg {
+            issuer: d_dec_issuer(),
+            signing_key_env: d_dec_env(),
+        }
+    }
+}
 
 impl Default for DbCfg {
     fn default() -> Self {
@@ -257,6 +320,11 @@ impl Config {
             if !n.url.starts_with("tls://") {
                 bail!("nats.url must use tls://");
             }
+        }
+        sentinel_common::msg::validate_pop_id(&self.decisions.issuer)
+            .map_err(|e| anyhow::anyhow!("decisions.issuer: {e}"))?;
+        if !(1..=30).contains(&self.webhooks.timeout_s) {
+            bail!("webhooks.timeout_s must be 1..=30");
         }
         Ok(())
     }

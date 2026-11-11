@@ -29,6 +29,7 @@ pub struct Lab {
     pub db_url_api: String,
     /// Feed stats into the live view without NATS.
     pub live: sentinel_api::live::LiveHub,
+    pub state: AppState,
 }
 
 fn url_with_db(base: &str, db: &str, user: &str) -> String {
@@ -98,6 +99,9 @@ impl Lab {
             mode = "file"
             dir = "{}"
             from = "noreply@test"
+            [webhooks]
+            allow_http = true
+            allow_private_targets = true
             "#,
             mail_dir.display()
         ))
@@ -113,6 +117,7 @@ impl Lab {
         )
         .unwrap();
         let live = state.live.clone();
+        let app_state = state.clone();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
@@ -130,6 +135,7 @@ impl Lab {
             api_pool,
             db_url_api,
             live,
+            state: app_state,
         }
     }
 

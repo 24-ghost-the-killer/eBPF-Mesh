@@ -905,3 +905,366 @@ async fn passkeys_and_tunnel_test() {
     let _ = PASSWORD;
     let _ = totp;
 }
+
+/// Phase 7: attack reports from two workers merge into one attack per
+/// tenant; tenants only see their own attacks and decisions.
+#[tokio::test]
+#[ignore = "needs PostgreSQL: run with `make test-api`"]
+async fn attacks_merge_and_stay_private() {
+    use sentinel_api::attacks::{record_attack, record_decision, Change};
+    use sentinel_common::decision::{Decision, Verifier};
+    use sentinel_common::msg::{AttackMsg, SourceRate};
+
+    let lab = Lab::new().await;
+    let (mut a, ta) = lab.customer("atk-a@a.test").await;
+    let (mut b, tb) = lab.customer("atk-b@b.test").await;
+    let (_, asset) = a
+        .call(
+            Method::POST,
+            &format!("/tenants/{ta}/assets"),
+            Some(json!({"origin_ip": "192.0.2.10", "services": []})),
+        )
+        .await;
+    let ip = asset["protected_prefix"]
+        .as_str()
+        .unwrap()
+        .trim_end_matches("/32")
+        .to_string();
+    let now = sentinel_common::units::now_unix_ms();
+    let msg = |issuer: &str, status: &str, pps: f64, decisions: u32, src: &str| AttackMsg {
+        kind: "attack".into(),
+        v: 1,
+        id: format!("{issuer}-{ta}-{now}"),
+        issuer: issuer.into(),
+        tenant: ta as u32,
+        status: status.into(),
+        vector: "udp_flood".into(),
+        started_at: now - 3000,
+        ended_at: (status == "ended").then_some(now),
+        ts: now,
+        pps,
+        bps: pps * 4000.0,
+        peak_pps: pps,
+        peak_bps: pps * 4000.0,
+        dropped_ratio: 0.5,
+        pops: vec!["lab1".into()],
+        targets: vec![ip.clone()],
+        top_sources: vec![SourceRate {
+            src: src.into(),
+            pps: pps / 2.0,
+        }],
+        decisions,
+    };
+    let pool = &lab.api_pool;
+    let c1 = record_attack(pool, &msg("w1", "started", 5000.0, 2, "203.0.113.64"))
+        .await
+        .unwrap();
+    let Change::Started(id) = c1 else {
+        panic!("{c1:?}")
+    };
+    assert_eq!(
+        record_attack(pool, &msg("w2", "started", 7000.0, 3, "203.0.113.65"))
+            .await
+            .unwrap(),
+        Change::Updated(id),
+        "a second worker joins the same attack"
+    );
+    assert_eq!(
+        record_attack(pool, &msg("w1", "ended", 0.0, 2, "203.0.113.64"))
+            .await
+            .unwrap(),
+        Change::Updated(id),
+        "still open while w2 reports it"
+    );
+    let (s, list) = a
+        .call(Method::GET, &format!("/tenants/{ta}/attacks"), None)
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(list.as_array().unwrap().len(), 1);
+    assert_eq!(list[0]["status"], "active");
+    assert_eq!(list[0]["peak_pps"], 7000);
+    assert_eq!(list[0]["decisions"], 5);
+    assert_eq!(
+        list[0]["asset_id"], asset["id"],
+        "mapped to the targeted asset"
+    );
+    assert_eq!(
+        record_attack(pool, &msg("w2", "ended", 0.0, 3, "203.0.113.65"))
+            .await
+            .unwrap(),
+        Change::Ended(id)
+    );
+
+    // A verified decision for tenant A shows in A's attack, never in B's view.
+    let key = ed25519_dalek::SigningKey::from_bytes(&[4; 32]);
+    let mut v = Verifier::default();
+    v.set_key("w1", key.verifying_key(), false);
+    let mut d = Decision {
+        kind: "decision".into(),
+        v: 1,
+        id: "d-1".into(),
+        issuer: "w1".into(),
+        tenant: ta as u32,
+        src: "203.0.113.64/32".into(),
+        action: "block".into(),
+        ttl_s: 300,
+        reason: "udp_flood".into(),
+        ts: now,
+        sig: String::new(),
+    };
+    d.sign(&key);
+    assert!(record_decision(pool, &mut v, &mut d.clone()).await.unwrap());
+    let mut forged = d.clone();
+    forged.id = "d-2".into();
+    forged.src = "203.0.113.99/32".into();
+    assert!(
+        !record_decision(pool, &mut v, &mut forged).await.unwrap(),
+        "bad signature"
+    );
+
+    let (s, det) = a
+        .call(Method::GET, &format!("/tenants/{ta}/attacks/{id}"), None)
+        .await;
+    assert_eq!(s, StatusCode::OK, "{det}");
+    assert_eq!(det["attack"]["status"], "ended");
+    assert_eq!(det["decisions"].as_array().unwrap().len(), 1);
+    assert_eq!(det["decisions"][0]["src"], "203.0.113.64/32");
+    assert_eq!(det["top_sources"][0]["src"], "203.0.113.65");
+    assert_eq!(
+        det["samples"].as_array().unwrap().len(),
+        1,
+        "same ts: one sample"
+    );
+
+    for path in [
+        format!("/tenants/{ta}/attacks"),
+        format!("/tenants/{ta}/attacks/{id}"),
+        format!("/tenants/{tb}/attacks/{id}"),
+    ] {
+        let (s, body) = b.call(Method::GET, &path, None).await;
+        assert_eq!(s, StatusCode::NOT_FOUND, "{path}: {body}");
+    }
+    let (_, own) = b
+        .call(Method::GET, &format!("/tenants/{tb}/attacks"), None)
+        .await;
+    assert_eq!(own, json!([]));
+    // RLS hides A's attacks and decisions from B's tenant scope even at SQL level.
+    let mut tx = sentinel_api::db::begin(
+        &lab.api_pool,
+        sentinel_api::db::Scope {
+            user: None,
+            tenant: Some(ta),
+            key_tenant: None,
+            admin: false,
+        },
+    )
+    .await
+    .unwrap();
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM attacks")
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    assert_eq!(n, 0, "no membership, no rows");
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM decisions")
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    assert_eq!(n, 0);
+}
+
+/// Phase 7: webhooks are tenant-private, secrets are shown once, and HTTP
+/// deliveries are signed.
+#[tokio::test]
+#[ignore = "needs PostgreSQL: run with `make test-api`"]
+async fn webhooks_deliver_signed_events() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let lab = Lab::new().await;
+    let (mut a, ta) = lab.customer("wh-a@a.test").await;
+    let (mut b, _) = lab.customer("wh-b@b.test").await;
+
+    // A one-shot HTTP receiver.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let received = tokio::spawn(async move {
+        let (mut s, _) = listener.accept().await.unwrap();
+        let mut buf = vec![0u8; 65536];
+        let mut n = 0;
+        loop {
+            let k = s.read(&mut buf[n..]).await.unwrap();
+            n += k;
+            let text = String::from_utf8_lossy(&buf[..n]).to_string();
+            if let Some((head, body)) = text.split_once("\r\n\r\n") {
+                let len: usize = head
+                    .lines()
+                    .find_map(|l| {
+                        l.to_lowercase()
+                            .strip_prefix("content-length:")
+                            .map(|v| v.trim().parse().unwrap())
+                    })
+                    .unwrap_or(0);
+                if body.len() >= len {
+                    s.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n")
+                        .await
+                        .unwrap();
+                    return (head.to_string(), body.to_string());
+                }
+            }
+            if k == 0 {
+                panic!("connection closed");
+            }
+        }
+    });
+
+    let (s, e) = a
+        .call(
+            Method::POST,
+            &format!("/tenants/{ta}/webhooks"),
+            Some(json!({"kind": "slack", "target": "https://evil.example/x"})),
+        )
+        .await;
+    assert_eq!(
+        (s, e["error"].as_str()),
+        (StatusCode::BAD_REQUEST, Some("invalid_target"))
+    );
+    let (s, created) = a
+        .call(
+            Method::POST,
+            &format!("/tenants/{ta}/webhooks"),
+            Some(json!({"kind": "http", "name": "ops", "target": format!("http://127.0.0.1:{port}/hook")})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{created}");
+    let secret = created["secret"].as_str().unwrap().to_string();
+    assert!(secret.starts_with("whsec_"));
+    let wid = created["webhook"]["id"].as_i64().unwrap();
+    let (_, list) = a
+        .call(Method::GET, &format!("/tenants/{ta}/webhooks"), None)
+        .await;
+    assert_eq!(list.as_array().unwrap().len(), 1);
+    assert!(
+        !list.to_string().contains(&secret),
+        "the secret is shown once"
+    );
+    let stored: Vec<u8> = sqlx::query_scalar("SELECT secret FROM webhooks WHERE id = $1")
+        .bind(wid)
+        .fetch_one(&lab.su)
+        .await
+        .unwrap();
+    assert!(
+        !String::from_utf8_lossy(&stored).contains(&secret),
+        "encrypted at rest"
+    );
+
+    // Other tenants cannot see, test or delete it.
+    for (m, path) in [
+        (Method::GET, format!("/tenants/{ta}/webhooks")),
+        (Method::POST, format!("/tenants/{ta}/webhooks/{wid}/test")),
+        (Method::DELETE, format!("/tenants/{ta}/webhooks/{wid}")),
+    ] {
+        let (s, _) = b.call(m, &path, None).await;
+        assert_eq!(s, StatusCode::NOT_FOUND, "{path}");
+    }
+
+    let (s, r) = a
+        .call(
+            Method::POST,
+            &format!("/tenants/{ta}/webhooks/{wid}/test"),
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{r}");
+    assert_eq!(r["ok"], true, "{r}");
+    let (head, body) = received.await.unwrap();
+    let header = |name: &str| {
+        head.lines()
+            .find_map(|l| {
+                let (k, v) = l.split_once(':')?;
+                (k.eq_ignore_ascii_case(name)).then(|| v.trim().to_string())
+            })
+            .unwrap_or_default()
+    };
+    let ts: u64 = header("x-sentinel-timestamp").parse().unwrap();
+    assert_eq!(
+        header("x-sentinel-signature"),
+        sentinel_api::webhook::sign(secret.as_bytes(), ts, body.as_bytes())
+    );
+    let ev: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(ev["event"], "test");
+    assert_eq!(ev["tenant"], ta);
+    let (_, list) = a
+        .call(Method::GET, &format!("/tenants/{ta}/webhooks"), None)
+        .await;
+    assert_eq!(list[0]["last_status"], "ok: HTTP 200");
+
+    let (s, _) = a
+        .call(
+            Method::DELETE,
+            &format!("/tenants/{ta}/webhooks/{wid}"),
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let _ = lab.state.clone();
+}
+
+/// Phase 7: signing keys and admin decisions need a platform admin with 2FA.
+#[tokio::test]
+#[ignore = "needs PostgreSQL: run with `make test-api`"]
+async fn signing_keys_are_admin_only() {
+    let lab = Lab::new().await;
+    let (mut c, _) = lab.customer("keys@p.test").await;
+    let body = json!({"issuer": "worker-9", "public_key": sentinel_common::decision::public_key_b64(
+        &ed25519_dalek::SigningKey::from_bytes(&[9; 32]))});
+    let (s, _) = c
+        .call(Method::POST, "/admin/signing-keys", Some(body.clone()))
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _) = c.call(Method::GET, "/admin/decisions", None).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    sqlx::query("UPDATE users SET is_platform_admin = true WHERE email = 'keys@p.test'")
+        .execute(&lab.su)
+        .await
+        .unwrap();
+    c.enable_totp("keys@p.test").await;
+    let (s, e) = c
+        .call(Method::POST, "/admin/signing-keys", Some(body))
+        .await;
+    assert_eq!(s, StatusCode::NO_CONTENT, "{e}");
+    let doc = lab.outbox("keys", "issuer.worker-9").await.unwrap();
+    assert_eq!(doc["revoked"], false);
+    let (s, _) = c
+        .call(Method::POST, "/admin/signing-keys/worker-9/revoke", None)
+        .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let doc = lab.outbox("keys", "issuer.worker-9").await.unwrap();
+    assert_eq!(doc["revoked"], true, "revocation reaches the PoPs");
+    let (s, e) = c
+        .call(
+            Method::POST,
+            "/admin/signing-keys",
+            Some(json!({"issuer": "worker-9", "public_key": sentinel_common::decision::public_key_b64(
+                &ed25519_dalek::SigningKey::from_bytes(&[8; 32]))})),
+        )
+        .await;
+    assert_eq!(
+        s,
+        StatusCode::BAD_REQUEST,
+        "a revoked issuer stays revoked: {e}"
+    );
+    let (s, e) = c
+        .call(
+            Method::POST,
+            "/admin/decisions",
+            Some(json!({"tenant": 0, "src": "203.0.113.0/24", "ttl_s": 60, "reason": "manual"})),
+        )
+        .await;
+    assert_eq!(
+        (s, e["error"].as_str()),
+        (StatusCode::SERVICE_UNAVAILABLE, Some("unavailable")),
+        "no key configured"
+    );
+    let (s, list) = c.call(Method::GET, "/admin/signing-keys", None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(list[0]["issuer"], "worker-9");
+}

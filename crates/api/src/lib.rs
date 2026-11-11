@@ -6,6 +6,7 @@
 //! come back over NATS. The web app talks only to this API.
 
 pub mod alloc;
+pub mod attacks;
 pub mod auth;
 pub mod config;
 pub mod crypto;
@@ -15,6 +16,7 @@ pub mod kvsync;
 pub mod live;
 pub mod mail;
 pub mod routes;
+pub mod webhook;
 
 use std::sync::{Arc, OnceLock};
 
@@ -48,6 +50,8 @@ pub struct AppState {
     pub live: LiveHub,
     /// Set once NATS is connected (tunnel tests use request/reply).
     pub nats: Arc<OnceLock<async_nats::Client>>,
+    /// Signs the API's own decisions (admin panel); optional.
+    pub decision_key: Option<Arc<ed25519_dalek::SigningKey>>,
 }
 
 impl AppState {
@@ -57,6 +61,9 @@ impl AppState {
         mailer: Arc<dyn Mailer>,
         data_key: DataKey,
     ) -> anyhow::Result<AppState> {
+        // One TLS provider for the whole process (reqwest for webhooks; NATS
+        // and PostgreSQL use ring as well).
+        let _ = rustls::crypto::ring::default_provider().install_default();
         let url = url::Url::parse(&cfg.server.public_url).context("server.public_url")?;
         let host = url
             .host_str()
@@ -77,6 +84,7 @@ impl AppState {
             webauthn: Arc::new(webauthn),
             live: LiveHub::default(),
             nats: Arc::new(OnceLock::new()),
+            decision_key: None,
         })
     }
 }
@@ -126,7 +134,12 @@ impl Modify for Security {
         routes::tenant::list_keys, routes::tenant::create_key, routes::tenant::delete_key,
         routes::tenant::audit_log,
         routes::platform::status, routes::platform::admin_pops, routes::platform::admin_tenants,
-        routes::platform::killswitch,
+        routes::platform::killswitch, routes::platform::admin_decisions,
+        routes::platform::create_decision, routes::platform::list_signing_keys,
+        routes::platform::add_signing_key, routes::platform::revoke_signing_key,
+        routes::attacks::list_attacks, routes::attacks::get_attack,
+        routes::attacks::list_webhooks, routes::attacks::create_webhook,
+        routes::attacks::delete_webhook, routes::attacks::test_webhook,
     ),
     modifiers(&Security)
 )]
@@ -139,7 +152,7 @@ pub fn openapi_json() -> String {
 }
 
 pub fn router(state: AppState) -> Router {
-    use routes::{auth as a, me, platform as p, tenant as t, webauthn as w};
+    use routes::{attacks as at, auth as a, me, platform as p, tenant as t, webauthn as w};
     let api = Router::new()
         .route("/auth/signup", post(a::signup))
         .route("/auth/verify-email", post(a::verify_email))
@@ -197,6 +210,26 @@ pub fn router(state: AppState) -> Router {
         .route("/admin/tenants", get(p::admin_tenants))
         .route("/admin/killswitch", post(p::killswitch))
         .route(
+            "/admin/decisions",
+            get(p::admin_decisions).post(p::create_decision),
+        )
+        .route(
+            "/admin/signing-keys",
+            get(p::list_signing_keys).post(p::add_signing_key),
+        )
+        .route(
+            "/admin/signing-keys/{issuer}/revoke",
+            post(p::revoke_signing_key),
+        )
+        .route("/tenants/{tid}/attacks", get(at::list_attacks))
+        .route("/tenants/{tid}/attacks/{aid}", get(at::get_attack))
+        .route(
+            "/tenants/{tid}/webhooks",
+            get(at::list_webhooks).post(at::create_webhook),
+        )
+        .route("/tenants/{tid}/webhooks/{wid}", delete(at::delete_webhook))
+        .route("/tenants/{tid}/webhooks/{wid}/test", post(at::test_webhook))
+        .route(
             "/openapi.json",
             get(|| async { ([(header::CONTENT_TYPE, "application/json")], openapi_json()) }),
         )
@@ -219,6 +252,7 @@ pub fn router(state: AppState) -> Router {
 
 /// Starts the outbox publisher and the ack/health consumers.
 pub async fn start_nats(state: &AppState) -> anyhow::Result<()> {
+    attacks::register_own_key(state).await?;
     if let Some(n) = &state.cfg.nats {
         let client = kvsync::connect(n).await?;
         let _ = state.nats.set(client.clone());
@@ -228,6 +262,11 @@ pub async fn start_nats(state: &AppState) -> anyhow::Result<()> {
             state.outbox.clone(),
         ));
         tokio::spawn(kvsync::stats_consumer(state.live.clone(), client.clone()));
+        tokio::spawn(attacks::consume_attacks(state.clone(), client.clone()));
+        tokio::spawn(attacks::consume_decisions(
+            state.pool.clone(),
+            client.clone(),
+        ));
         tokio::spawn(kvsync::consumers(state.pool.clone(), client));
     } else {
         tracing::warn!(

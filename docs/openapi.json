@@ -10,6 +10,103 @@
     "version": "1"
   },
   "paths": {
+    "/api/v1/admin/decisions": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Recent decisions from every issuer (workers and the API), newest first.",
+        "operationId": "admin_decisions",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AdminDecision"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Block a source everywhere now: a decision signed with the API's key and\npublished to every PoP. Always expires.",
+        "operationId": "create_decision",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewDecision"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminDecision"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/admin/killswitch": {
       "post": {
         "tags": [
@@ -74,6 +171,130 @@
             }
           },
           "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/signing-keys": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "operationId": "list_signing_keys",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SigningKeyView"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Trust a worker's decisions (published to every PoP through KV).",
+        "operationId": "add_signing_key",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewSigningKey"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {},
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/signing-keys/{issuer}/revoke": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Revoke an issuer: every PoP refuses its decisions from then on.",
+        "operationId": "revoke_signing_key",
+        "parameters": [
+          {
+            "name": "issuer",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
             "content": {
               "application/json": {
                 "schema": {
@@ -1485,6 +1706,123 @@
         ]
       }
     },
+    "/api/v1/tenants/{tid}/attacks": {
+      "get": {
+        "tags": [
+          "attacks"
+        ],
+        "summary": "Attacks, newest first.",
+        "operationId": "list_attacks",
+        "parameters": [
+          {
+            "name": "tid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "1-200, default 50",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AttackView"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/tenants/{tid}/attacks/{aid}": {
+      "get": {
+        "tags": [
+          "attacks"
+        ],
+        "operationId": "get_attack",
+        "parameters": [
+          {
+            "name": "tid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "aid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AttackDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
     "/api/v1/tenants/{tid}/audit": {
       "get": {
         "tags": [
@@ -1899,10 +2237,283 @@
           }
         ]
       }
+    },
+    "/api/v1/tenants/{tid}/webhooks": {
+      "get": {
+        "tags": [
+          "webhooks"
+        ],
+        "operationId": "list_webhooks",
+        "parameters": [
+          {
+            "name": "tid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/WebhookView"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "api_key": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "webhooks"
+        ],
+        "summary": "Notify a Discord or Slack channel, an HTTP endpoint (signed) or an email\naddress when attacks start and end.",
+        "operationId": "create_webhook",
+        "parameters": [
+          {
+            "name": "tid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateWebhook"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatedWebhook"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/tenants/{tid}/webhooks/{wid}": {
+      "delete": {
+        "tags": [
+          "webhooks"
+        ],
+        "operationId": "delete_webhook",
+        "parameters": [
+          {
+            "name": "tid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "wid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/tenants/{tid}/webhooks/{wid}/test": {
+      "post": {
+        "tags": [
+          "webhooks"
+        ],
+        "summary": "Sends a test notification now.",
+        "operationId": "test_webhook",
+        "parameters": [
+          {
+            "name": "tid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "wid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookTestResult"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "api_key": []
+          }
+        ]
+      }
     }
   },
   "components": {
     "schemas": {
+      "ActiveAttack": {
+        "type": "object",
+        "description": "An attack in progress (spec 13.4: the overview shows them live).",
+        "required": [
+          "id",
+          "vector",
+          "started_at",
+          "pps",
+          "bps",
+          "peak_pps",
+          "dropped_ratio"
+        ],
+        "properties": {
+          "bps": {
+            "type": "number",
+            "format": "double"
+          },
+          "dropped_ratio": {
+            "type": "number",
+            "format": "double",
+            "description": "Share of the attack traffic the PoPs drop (0..1)."
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "peak_pps": {
+            "type": "number",
+            "format": "double"
+          },
+          "pps": {
+            "type": "number",
+            "format": "double"
+          },
+          "started_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix ms."
+          },
+          "vector": {
+            "type": "string"
+          }
+        }
+      },
       "AddMember": {
         "type": "object",
         "required": [
@@ -1916,6 +2527,60 @@
           "role": {
             "type": "string",
             "description": "owner, admin or viewer"
+          }
+        }
+      },
+      "AdminDecision": {
+        "type": "object",
+        "required": [
+          "issuer",
+          "id",
+          "src",
+          "action",
+          "ttl_s",
+          "reason",
+          "ts",
+          "expires_at",
+          "active"
+        ],
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "active": {
+            "type": "boolean"
+          },
+          "expires_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "id": {
+            "type": "string"
+          },
+          "issuer": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "src": {
+            "type": "string"
+          },
+          "tenant_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "null = global"
+          },
+          "ts": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "ttl_s": {
+            "type": "integer",
+            "format": "int32"
           }
         }
       },
@@ -2067,6 +2732,157 @@
           }
         }
       },
+      "AttackDetail": {
+        "type": "object",
+        "required": [
+          "attack",
+          "samples",
+          "top_sources",
+          "decisions"
+        ],
+        "properties": {
+          "attack": {
+            "$ref": "#/components/schemas/AttackView"
+          },
+          "decisions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DecisionView"
+            },
+            "description": "Blocks issued during the attack."
+          },
+          "samples": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AttackSample"
+            },
+            "description": "Rates over time (one sample per worker report)."
+          },
+          "top_sources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SourceView"
+            }
+          }
+        }
+      },
+      "AttackSample": {
+        "type": "object",
+        "required": [
+          "ts",
+          "pps",
+          "bps",
+          "dropped_ratio"
+        ],
+        "properties": {
+          "bps": {
+            "type": "number",
+            "format": "double"
+          },
+          "dropped_ratio": {
+            "type": "number",
+            "format": "double"
+          },
+          "pps": {
+            "type": "number",
+            "format": "double"
+          },
+          "ts": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "AttackView": {
+        "type": "object",
+        "required": [
+          "id",
+          "vector",
+          "status",
+          "started_at",
+          "peak_pps",
+          "peak_bps",
+          "pps",
+          "bps",
+          "dropped_ratio",
+          "pops",
+          "targets",
+          "decisions"
+        ],
+        "properties": {
+          "asset_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "bps": {
+            "type": "number",
+            "format": "double"
+          },
+          "decisions": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Sources blocked by signed decisions."
+          },
+          "dropped_ratio": {
+            "type": "number",
+            "format": "double",
+            "description": "Share of the attack traffic dropped at the PoPs (0..1)."
+          },
+          "ended_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "peak_bps": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "peak_pps": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "pops": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "pps": {
+            "type": "number",
+            "format": "double",
+            "description": "Latest rates (0 once ended)."
+          },
+          "started_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix ms."
+          },
+          "status": {
+            "type": "string",
+            "description": "active or ended"
+          },
+          "targets": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Most targeted protected IPs."
+          },
+          "vector": {
+            "type": "string",
+            "description": "syn_flood, udp_flood, icmp_flood, ack_flood, volumetric"
+          }
+        }
+      },
       "AuditView": {
         "type": "object",
         "required": [
@@ -2183,6 +2999,82 @@
           }
         }
       },
+      "CreateWebhook": {
+        "type": "object",
+        "required": [
+          "kind",
+          "target"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string",
+            "description": "URL (discord, slack, http) or email address."
+          }
+        }
+      },
+      "CreatedWebhook": {
+        "type": "object",
+        "required": [
+          "webhook"
+        ],
+        "properties": {
+          "secret": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "HTTP webhooks only, shown once: verify X-Sentinel-Signature with it."
+          },
+          "webhook": {
+            "$ref": "#/components/schemas/WebhookView"
+          }
+        }
+      },
+      "DecisionView": {
+        "type": "object",
+        "required": [
+          "id",
+          "issuer",
+          "src",
+          "reason",
+          "ttl_s",
+          "ts",
+          "expires_at"
+        ],
+        "properties": {
+          "expires_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "id": {
+            "type": "string"
+          },
+          "issuer": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "src": {
+            "type": "string",
+            "description": "Blocked source prefix."
+          },
+          "ts": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "ttl_s": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
       "EmailReq": {
         "type": "object",
         "required": [
@@ -2281,9 +3173,17 @@
           "ts",
           "total",
           "pops",
-          "verdicts"
+          "verdicts",
+          "attacks"
         ],
         "properties": {
+          "attacks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ActiveAttack"
+            },
+            "description": "Attacks in progress."
+          },
           "pops": {
             "type": "array",
             "items": {
@@ -2401,6 +3301,36 @@
           }
         }
       },
+      "NewDecision": {
+        "type": "object",
+        "required": [
+          "tenant",
+          "src",
+          "ttl_s",
+          "reason"
+        ],
+        "properties": {
+          "reason": {
+            "type": "string",
+            "description": "Lower-case word, e.g. \"manual\" or \"abuse_report\"."
+          },
+          "src": {
+            "type": "string",
+            "description": "Source address or prefix to block."
+          },
+          "tenant": {
+            "type": "integer",
+            "format": "int32",
+            "description": "0 = every tenant (global block).",
+            "minimum": 0
+          },
+          "ttl_s": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
       "NewKey": {
         "type": "object",
         "required": [
@@ -2422,6 +3352,23 @@
             "items": {
               "type": "string"
             }
+          }
+        }
+      },
+      "NewSigningKey": {
+        "type": "object",
+        "required": [
+          "issuer",
+          "public_key"
+        ],
+        "properties": {
+          "issuer": {
+            "type": "string",
+            "description": "Worker or PoP name (a-z, 0-9, '-')."
+          },
+          "public_key": {
+            "type": "string",
+            "description": "Base64 Ed25519 public key (`sentinel-worker key generate`)."
           }
         }
       },
@@ -2736,6 +3683,38 @@
           }
         }
       },
+      "SigningKeyView": {
+        "type": "object",
+        "required": [
+          "issuer",
+          "public_key",
+          "revoked",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "issuer": {
+            "type": "string"
+          },
+          "public_key": {
+            "type": "string",
+            "description": "Base64 Ed25519 public key."
+          },
+          "revoked": {
+            "type": "boolean"
+          },
+          "revoked_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          }
+        }
+      },
       "SignupReq": {
         "type": "object",
         "required": [
@@ -2753,6 +3732,22 @@
           "tenant_name": {
             "type": "string",
             "description": "Name of the customer account (tenant) created with the user."
+          }
+        }
+      },
+      "SourceView": {
+        "type": "object",
+        "required": [
+          "src",
+          "pps"
+        ],
+        "properties": {
+          "pps": {
+            "type": "number",
+            "format": "double"
+          },
+          "src": {
+            "type": "string"
           }
         }
       },
@@ -2921,6 +3916,65 @@
             "format": "double"
           },
           "verdict": {
+            "type": "string"
+          }
+        }
+      },
+      "WebhookTestResult": {
+        "type": "object",
+        "required": [
+          "ok",
+          "status"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "status": {
+            "type": "string",
+            "description": "\"HTTP 200\", \"sent\", or the error."
+          }
+        }
+      },
+      "WebhookView": {
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "name",
+          "target",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "kind": {
+            "type": "string",
+            "description": "discord, slack, http or email"
+          },
+          "last_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "last_status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "target": {
             "type": "string"
           }
         }
