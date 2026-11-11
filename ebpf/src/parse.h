@@ -22,12 +22,16 @@
 #include <linux/ipv6.h>
 #include <linux/tcp.h>
 #include <linux/udp.h>
-#include <linux/icmp.h>
 #include <linux/icmpv6.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_endian.h>
 
 #include "abi.h"
+
+/* ICMP header length (type, code, checksum, 4 bytes rest). <linux/icmp.h>
+ * is not included: it pulls in glibc headers (<sys/socket.h>), which break
+ * -target bpf builds on x86_64 (gnu/stubs-32.h). */
+#define XS_ICMP_HDR_LEN 8
 
 /*
  * Bounds a value for the verifier with a mask clang cannot optimise away.
@@ -149,8 +153,8 @@ static __always_inline int xs_parse_l4(void *l4, void *data_end, __u32 avail,
 	case IPPROTO_ICMP:
 		if (pkt->l3_proto != ETH_P_IP)
 			return XS_P_OK; /* ICMPv4 inside IPv6: not ours to judge */
-		if (l4 + sizeof(struct icmphdr) > data_end ||
-		    avail < sizeof(struct icmphdr))
+		if (l4 + XS_ICMP_HDR_LEN > data_end ||
+		    avail < XS_ICMP_HDR_LEN)
 			return XS_P_MALFORMED;
 		pkt->icmp_type = *(__u8 *)l4;
 		return XS_P_OK;
