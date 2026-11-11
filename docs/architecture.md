@@ -172,6 +172,33 @@ once no interface uses them. See [ADR 0007](adr/0007-loader-and-attachment.md).
   doesn't (upgrades).
 - **Security:** see ADR 0014.
 
+## Control plane (phase 5)
+
+```
+browser / API client ── HTTPS ──► sentinel-api (axum)
+                                    │  every request: transaction with
+                                    │  app.user_id / tenant_id / key_tenant
+                                    ▼
+                                 PostgreSQL (RLS on every tenant table)
+                                    │  same transaction: kv_outbox rows
+                                    ▼
+                         outbox publisher ──► NATS KV ──► agents ──► XDP maps
+                                    ▲                        │
+              config_acks, pops ◄───┴── config.ack.*, health.* ┘
+```
+
+- **Auth:** argon2id, server-side sessions (hashed tokens) in HttpOnly
+  SameSite=Strict cookies, per-session CSRF tokens, TOTP 2FA (encrypted at
+  rest), DB-backed login rate limits, scoped API keys (hashed). ADR 0016.
+- **Authorisation:** the role comes from the membership row (or the API
+  key), checked by every handler; PostgreSQL RLS repeats the check and
+  requires membership, never trusting the tenant id from the URL.
+- **Configuration flow:** PostgreSQL first, then KV through the outbox;
+  "active on X of Y PoPs" compares the asset's `config_version` with the
+  versions each agent acknowledged.
+- **Endpoints and deviations:** ADR 0017; the OpenAPI document is the
+  contract for the web app.
+
 ## Decisions
 
 See [docs/adr/](adr/).

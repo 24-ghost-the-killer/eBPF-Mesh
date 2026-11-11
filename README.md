@@ -16,9 +16,9 @@ ASNs. Nothing here is meant to touch the real internet yet.
 | 1 | Foundation: repo, CI, XDP parser + per-CPU counters, `sentinelctl` attach/detach/stats | done |
 | 2 | Filtering: bogons, allow/blocklists, services, rate limit, SYN cookies, observe/mitigate | done |
 | 3 | Tenants and IPIP tunnel delivery, return path, customer script, MTU/MSS | done |
-| 4 | PoP agent and NATS: KV config with acks, stats, telemetry, health | **done** |
-| 5 | Control-plane API and PostgreSQL | next |
-| 6 | Portal v1 | |
+| 4 | PoP agent and NATS: KV config with acks, stats, telemetry, health | done |
+| 5 | Control-plane API and PostgreSQL: auth, 2FA, roles, RLS, assets, policy, rules, audit | **done** |
+| 6 | Portal v1 | next |
 | 7 | Analysis workers and signed decisions | |
 | 8 | Anycast lab (containerlab + BIRD) | |
 | 9 | Public website | |
@@ -53,6 +53,16 @@ ASNs. Nothing here is meant to touch the real internet yet.
   garbage-collects expired entries. NATS with TLS and one nkey user per
   component ([ADR 0014](docs/adr/0014-nats-users-and-permissions.md),
   [ADR 0015](docs/adr/0015-kv-schema-and-agent-ownership.md)).
+- **`sentinel-api`** (axum + PostgreSQL): signup with email verification,
+  login with argon2id, server-side sessions with CSRF tokens, TOTP 2FA,
+  password reset, roles (viewer < admin < owner, platform admin), API keys
+  with scopes, Row Level Security as a second safety net, protected-IP
+  allocation, per-asset policy, allow/block rules, tunnel scripts, "active
+  on X of Y PoPs", members, audit log, public PoP status, admin kill switch.
+  Changes reach the PoPs through a transactional outbox into NATS KV.
+  OpenAPI at `/api/v1/openapi.json` (snapshot in `docs/openapi.json`)
+  ([ADR 0016](docs/adr/0016-api-sessions-rls-outbox.md),
+  [ADR 0017](docs/adr/0017-api-shape.md)).
 - **`sentinelctl`**: attach/detach (native XDP, pinned `bpf_link`), stats,
   assets (`asset add/del/list/script`), per-asset policy and services,
   allow/block rules with TTL, PoP config, SYN-cookie key rotation, gc.
@@ -64,10 +74,17 @@ ASNs. Nothing here is meant to touch the real internet yet.
   for drift by a Rust test that parses the header.
 - **Tests**: 284 `BPF_PROG_TEST_RUN` checks (verdicts, exact counters, exact
   output bytes for SYN challenges, tunnel encapsulation, the return path with
-  MSS clamping, sampled events), 5 veth/netns suites with real traffic, 66
-  Rust unit tests, CI.
+  MSS clamping, sampled events), 6 veth/netns suites with real traffic
+  (111 checks), 84 Rust tests including API integration tests against a
+  real PostgreSQL, CI.
 
 Acceptance tests:
+- phase 5 (`crates/api/tests/api.rs`): a customer signs up and gets a
+  protected IP through the API; a second customer gets 404 for every way of
+  reaching it, and RLS hides it at the SQL level even for a non-member who
+  names the tenant. `tests/integration/api_e2e.sh` runs the whole platform:
+  API signup to traffic through the PoP, policy and rules from the API
+  enforced, "active on 1 of 1 PoPs" from the agent's acknowledgement.
 - phase 4 (`tests/integration/agent_kv.sh`): with NATS (TLS, nkeys) and the
   agent running, `nats kv put tenants asset.1 ...` makes the protected IP
   work within a second, nothing restarted; policy, services and block rules
@@ -120,18 +137,21 @@ crates/common             ABI mirror, pin layout, prefixes, lab ranges, stats
 crates/bpf                Linux access to the XDP program (attach, maps, rules, stats)
 crates/ctl                sentinelctl (operator CLI)
 crates/agent              sentinel-agent (PoP agent)
+crates/api                sentinel-api (control-plane API) + its integration tests
 crates/gen                sentinel-gen (lab traffic generator)
-crates/{worker,api}       placeholders for phases 7, 5
+crates/worker             placeholder for phase 7
+migrations/postgres       schema + Row Level Security
 tests/bpf                 BPF_PROG_TEST_RUN harness, parser and policy suites
+tests/api                 throwaway PostgreSQL for the API tests
 tests/integration         veth/netns suites (counts, tunnel, live policy, SYN flood,
-                          agent + NATS)
+                          agent + NATS, API end to end)
 deploy/docker             development/test image (+ pinned NATS install script)
 deploy/nats               NATS server config renderer (users, permissions, TLS)
-configs/                  example agent configuration
+configs/                  example agent and API configuration
 docs/                     architecture, runbook, ADRs
 ```
 
-## Known limitations (after phase 4)
+## Known limitations (after phase 5)
 
 - Packets that do not fit the uplink MTU after the 20-byte tunnel header are
   dropped (`drop_too_big`); ICMP "fragmentation needed"/"packet too big"
@@ -145,8 +165,10 @@ docs/                     architecture, runbook, ADRs
   `drop_unverified`.
 - An expired longer prefix shadows an active shorter one until `gc` runs
   ([ADR 0011](docs/adr/0011-expiry-and-fail-open.md)).
-- Nothing writes KV yet except operators with the `nats` CLI; the API
-  (phase 5) will. Decisions (`decision.global`) arrive in phase 7.
+- No web app yet (phase 6); passkeys, traffic graphs and the live view come
+  with it. Mail is file/log only (no SMTP yet).
+- Decisions (`decision.global`), attacks and webhooks arrive in phase 7;
+  PoP draining in phase 8.
 - Health reports BGP as "n/a" until the BIRD integration (phase 8).
 
 ## License

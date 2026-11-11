@@ -19,7 +19,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             clang llvm libbpf-dev libelf-dev zlib1g-dev pkg-config \
-            iproute2 iputils-ping jq curl ethtool openssl python3
+            iproute2 iputils-ping jq curl ethtool openssl python3 postgresql
 
       - name: Install NATS server and CLI (pinned, checksummed)
         run: sudo deploy/docker/install-nats.sh
@@ -31,6 +31,9 @@ jobs:
 
       - name: Lint and unit tests
         run: make test
+
+      - name: API integration tests (throwaway PostgreSQL)
+        run: make test-api
 
       - name: Build XDP object and workspace
         run: make build

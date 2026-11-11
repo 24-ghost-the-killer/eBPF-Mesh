@@ -21,3 +21,5 @@ One file per decision: context, decision, consequences. Status is
 | [0013](0013-bpf-global-functions.md) | BPF program structure: global functions for verifier budget | Accepted |
 | [0014](0014-nats-users-and-permissions.md) | NATS: one user per component, TLS everywhere | Accepted |
 | [0015](0015-kv-schema-and-agent-ownership.md) | KV schema, versioning and agent ownership of maps | Accepted |
+| [0016](0016-api-sessions-rls-outbox.md) | API: sessions, CSRF, Row Level Security, outbox | Accepted |
+| [0017](0017-api-shape.md) | API shape: per-asset policy and onboarding details | Accepted |

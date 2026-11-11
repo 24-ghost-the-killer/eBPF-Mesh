@@ -9,7 +9,7 @@
 - For tests: `iproute2` (with libbpf support for `ip link ... xdp obj`),
   `iputils-ping`, `jq`, `curl`, `ethtool`, `openssl`, `python3`, `nsenter`
   (util-linux), `nats-server` and `nats` (`deploy/docker/install-nats.sh`
-  installs the pinned versions)
+  installs the pinned versions), PostgreSQL 16+ server binaries (`initdb`)
 - bpffs mounted at `/sys/fs/bpf` (systemd does this; otherwise
   `mount -t bpf bpf /sys/fs/bpf`)
 
@@ -18,8 +18,9 @@
 ```sh
 make                         # build/ebpf/xdp_main.o + target/debug/sentinelctl
 make test                    # cargo fmt --check, clippy -D warnings, cargo test
+make test-api                # API integration tests (throwaway PostgreSQL)
 sudo make test-bpf           # 284 BPF_PROG_TEST_RUN checks
-sudo make test-integration   # veth_counts, tunnel, policy_live, synflood, agent_kv
+sudo make test-integration   # veth_counts, tunnel, policy_live, synflood, agent_kv, api_e2e
 ```
 
 `sudo make test-integration` does not build the Rust binaries (cargo is
@@ -30,6 +31,7 @@ usually not on root's PATH), so run `make` as your normal user first.
 | `veth_counts.sh` | native attach, exact per-verdict counters, generic refused, clean detach |
 | `tunnel.sh` | phase 3 acceptance: delivery through the tunnel, the origin sees the real client IP, tunnel return and DSR, 1 MiB both ways, oversize counted, MSS clamp rescues a wrong customer MTU |
 | `policy_live.sh` | rate limit, block/allow with TTL and gc, observe vs mitigate, kill switch, services, PoP traffic bypass |
+| `api_e2e.sh` | the whole platform: API signup, protected IP, tunnel script, traffic through the PoP, policy and rules from the API enforced, "active on 1 of 1 PoPs" |
 | `agent_kv.sh` | phase 4 acceptance: `nats kv put` configures a live PoP; KV policy/services/rules enforced and acked; bad documents rejected safely; stats, telemetry, health, heartbeat, metrics; NATS permissions and TLS; crash, resync, clean stop |
 | `synflood.sh` | phase 2 acceptance: a spoofed SYN flood never reaches the server while `curl` succeeds; control run in observe mode |
 
@@ -159,6 +161,38 @@ are always fine.
 | sampled flows, every second | `telemetry.<pop>.<shard>` |
 | health, every 5 s | `health.<pop>` and the heartbeat file |
 
+## Running the API
+
+1. **PostgreSQL 16+.** Create the database and an owner role, run the
+   migrations as the owner, then let the API's role log in:
+
+   ```sh
+   export SENTINEL_API_CONFIG=configs/api.local.toml        # from api.example.toml
+   export SENTINEL_DATABASE_OWNER_URL=postgres://sentinel_owner:...@db/sentinel
+   sentinel-api migrate                                     # creates role sentinel_api (NOLOGIN)
+   psql ... -c "ALTER ROLE sentinel_api LOGIN PASSWORD '...'"
+   ```
+
+   The owner needs `CREATEROLE` for the first migration (or create
+   `sentinel_api` yourself beforehand).
+
+2. **Secrets** (environment, never files in git):
+   `SENTINEL_DATABASE_URL` (role `sentinel_api`), `SENTINEL_DATA_KEY`
+   (`head -c 32 /dev/urandom | base64`; encrypts TOTP secrets: keep it,
+   losing it disables everyone's 2FA).
+
+3. **NATS:** give the API its own nkey user (`render-config.py --api U...`);
+   it may write the KV buckets and read acknowledgements and health.
+
+4. `sentinel-api serve`, behind TLS (a reverse proxy; then set
+   `trust_proxy = true`). First operator:
+   `SENTINEL_ADMIN_PASSWORD=... sentinel-api create-admin --email ops@example.org`,
+   then enable 2FA before using `/admin/*`.
+
+`sentinel-api openapi` prints the OpenAPI document; after changing
+endpoints regenerate the snapshot with
+`UPDATE_OPENAPI=1 cargo test -p sentinel-api --test openapi`.
+
 ## sentinel-gen (lab traffic generator)
 
 ```sh
@@ -209,6 +243,9 @@ XDP sees it (rx-vlan offload). On a PoP with tagged uplinks, disable it:
 | `drop_tunnel` | no PoP IPv4 configured (`config set --pop-ip4`) |
 | `drop_too_big` | packets above uplink MTU − 20; check the customer's MSS / tunnel MTU 1480 |
 | `drop_return` | replies from an unregistered origin, or with a source that is not that origin's asset |
+| API answers 404 for a tenant you belong to | session expired (idle 1 h) or the role is missing; check `GET /me` |
+| API `403 csrf` | send the `csrf_token` from login or `/me` as `X-CSRF-Token` |
+| asset status stays "0 of N PoPs" | outbox not drained (NATS down? `kv_outbox` rows) or the agent rejected the document (`config_acks.error`) |
 | `rejected: ...` in the agent log / `"ok":false` acks | the KV document failed validation; the previous state is kept |
 | agent: `KV sync stopped ... retrying` | NATS unreachable or bucket missing; XDP keeps the last state |
 | `sampled_events_lost` rising | ring buffer full: raise `sample_base` |
