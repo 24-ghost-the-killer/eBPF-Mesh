@@ -4,6 +4,7 @@
 #![forbid(unsafe_code)]
 
 pub mod abi;
+pub mod decision;
 pub mod lab;
 pub mod msg;
 pub mod pin;

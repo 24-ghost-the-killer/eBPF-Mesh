@@ -163,3 +163,44 @@ mod tests {
         assert!(t.lines().nth(1).unwrap().contains("fragment"));
     }
 }
+
+/// How a verdict counts for a tenant's traffic totals (live view, analysis).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TrafficClass {
+    /// Inbound and delivered (or would be).
+    Clean,
+    /// Inbound and rejected by a filter: dropped in mitigate mode, counted
+    /// only in observe mode. SYN challenges count here too.
+    Filtered,
+    /// The origin's replies through the return tunnel.
+    Return,
+    /// Not tenant traffic (PoP-local, non-IP, invalid return traffic).
+    Other,
+}
+
+pub fn traffic_class(verdict: &str) -> TrafficClass {
+    match Verdict::from_name(verdict) {
+        Some(Verdict::TxReturn) => TrafficClass::Return,
+        Some(Verdict::DropReturn | Verdict::PassLocal | Verdict::PassNonIp) | None => {
+            TrafficClass::Other
+        }
+        Some(v) if v.is_drop() || v == Verdict::TxSynChallenge => TrafficClass::Filtered,
+        Some(_) => TrafficClass::Clean,
+    }
+}
+
+#[cfg(test)]
+mod class_tests {
+    use super::*;
+
+    #[test]
+    fn classes() {
+        assert_eq!(traffic_class("pass"), TrafficClass::Clean);
+        assert_eq!(traffic_class("pass_allow"), TrafficClass::Clean);
+        assert_eq!(traffic_class("drop_block"), TrafficClass::Filtered);
+        assert_eq!(traffic_class("tx_syn_challenge"), TrafficClass::Filtered);
+        assert_eq!(traffic_class("tx_return"), TrafficClass::Return);
+        assert_eq!(traffic_class("pass_local"), TrafficClass::Other);
+        assert_eq!(traffic_class("nonsense"), TrafficClass::Other);
+    }
+}

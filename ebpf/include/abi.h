@@ -92,6 +92,7 @@ enum xs_counter {
 enum xs_reason {
 	XS_R_NONE = 0,
 	XS_R_MANUAL = 1, /* added by an operator */
+	XS_R_DECISION = 2, /* signed decision from an analysis worker (agent-owned) */
 };
 
 /* xs_cfg: ARRAY, one entry at key 0. Written by userspace. */

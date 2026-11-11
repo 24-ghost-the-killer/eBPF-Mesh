@@ -275,7 +275,11 @@ impl RulesDoc {
             }
             let reason = match r.reason.as_deref() {
                 None => Reason::Manual,
-                Some(n) => Reason::from_name(n).ok_or_else(|| format!("unknown reason {n:?}"))?,
+                Some(n) => match Reason::from_name(n) {
+                    // Decision entries belong to the agent (ADR 0021).
+                    Some(Reason::Decision) | None => return Err(format!("unknown reason {n:?}")),
+                    Some(r) => r,
+                },
             };
             Ok((r.prefix, r.expires_at, reason))
         };
@@ -413,6 +417,52 @@ pub struct ConfigAck {
     pub ok: bool,
     pub error: Option<String>,
     pub ts: u64,
+}
+
+pub fn subject_attack(tenant: u32) -> String {
+    format!("attack.{tenant}")
+}
+
+/// A source and its estimated rate, for attack reports.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SourceRate {
+    pub src: String,
+    pub pps: f64,
+}
+
+/// `attack.<tenant>`: one worker's view of an attack (spec section 8). The
+/// API merges reports of several workers into one attack (ADR 0021).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AttackMsg {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub v: u32,
+    /// Unique per worker and attack: "<issuer>-<tenant>-<started_at>".
+    pub id: String,
+    pub issuer: String,
+    pub tenant: u32,
+    /// "started", "updated" or "ended".
+    pub status: String,
+    /// syn_flood, udp_flood, icmp_flood, ack_flood, volumetric.
+    pub vector: String,
+    /// Unix ms.
+    pub started_at: u64,
+    pub ended_at: Option<u64>,
+    pub ts: u64,
+    /// Current and peak rates of all traffic to the tenant (from stats).
+    pub pps: f64,
+    pub bps: f64,
+    pub peak_pps: f64,
+    pub peak_bps: f64,
+    /// Share of the traffic the PoPs drop right now (0..1).
+    pub dropped_ratio: f64,
+    pub pops: Vec<String>,
+    /// Most targeted destination addresses.
+    pub targets: Vec<String>,
+    /// Largest sources seen by this worker (its shards).
+    pub top_sources: Vec<SourceRate>,
+    /// Decisions this worker issued for the attack so far.
+    pub decisions: u32,
 }
 
 /// `probe.<pop>` request: test the tunnel of one asset (ADR 0020). The

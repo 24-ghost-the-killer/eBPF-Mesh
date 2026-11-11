@@ -23,13 +23,17 @@ anyhow = "1"
 argon2 = "0.6"
 base64 = "0.23"
 getrandom = "0.3"
-reqwest = { version = "0.13", default-features = false, features = ["json"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider"] }
 sha2 = "0.11"
+hmac = "0.13"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls-ring-webpki", "migrate", "macros", "derive", "json"] }
 totp-rs = { version = "6", features = ["otpauth"] }
 webauthn-rs = { version = "0.6", features = ["danger-allow-state-serialisation"] }
 tokio-tungstenite = "0.29"
 url = "2"
+ed25519-dalek = "2.2"
+uuid = { version = "1", features = ["v7"] }
 utoipa = "6"
 async-nats = "0.52"
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }

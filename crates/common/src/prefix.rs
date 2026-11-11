@@ -80,6 +80,19 @@ impl Prefix {
         }
     }
 
+    /// The network address.
+    pub fn addr(&self) -> IpAddr {
+        match *self {
+            Prefix::V4(a, _) => IpAddr::V4(a),
+            Prefix::V6(a, _) => IpAddr::V6(a),
+        }
+    }
+
+    /// True when the two prefixes share at least one address.
+    pub fn overlaps(&self, other: &Prefix) -> bool {
+        self.contains(other.addr()) || other.contains(self.addr())
+    }
+
     pub fn contains(&self, ip: IpAddr) -> bool {
         match (*self, ip) {
             (Prefix::V4(n, l), IpAddr::V4(a)) => u32::from(a) & mask4(l) == u32::from(n),

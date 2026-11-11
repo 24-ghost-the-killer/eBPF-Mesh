@@ -151,15 +151,18 @@ pub const XS_C_COUNT: u32 = 1;
 pub enum Reason {
     None = 0,
     Manual = 1,
+    /// Signed decision (ADR 0021); kept by the agent, not by KV reconcile.
+    Decision = 2,
 }
 
 impl Reason {
-    pub const ALL: [Reason; 2] = [Reason::None, Reason::Manual];
+    pub const ALL: [Reason; 3] = [Reason::None, Reason::Manual, Reason::Decision];
 
     pub fn name(self) -> &'static str {
         match self {
             Reason::None => "none",
             Reason::Manual => "manual",
+            Reason::Decision => "decision",
         }
     }
 
