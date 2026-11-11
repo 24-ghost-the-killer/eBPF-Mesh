@@ -187,6 +187,69 @@
         ]
       }
     },
+    "/api/v1/admin/pops/{id}/drain": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Drain a PoP (or undo it) through its BGP announcements (ADR 0023).",
+        "operationId": "drain_pop",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Drain"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DrainResp"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/admin/signing-keys": {
       "get": {
         "tags": [
@@ -2084,6 +2147,103 @@
         ]
       }
     },
+    "/api/v1/tenants/{tid}/traffic": {
+      "get": {
+        "tags": [
+          "traffic"
+        ],
+        "summary": "Traffic history per PoP (from ClickHouse traffic_1m).",
+        "operationId": "traffic",
+        "parameters": [
+          {
+            "name": "tid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Unix ms (default: `to` - 1 hour).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "Unix ms (default: now).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "step",
+            "in": "query",
+            "description": "Seconds per point, a multiple of 60 (default 60).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Traffic"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
     "/api/v1/tenants/{tid}/users": {
       "get": {
         "tags": [
@@ -3075,6 +3235,39 @@
           }
         }
       },
+      "Drain": {
+        "type": "object",
+        "required": [
+          "drain"
+        ],
+        "properties": {
+          "drain": {
+            "type": "boolean",
+            "description": "true: announce the anycast prefixes with a longer AS path so traffic\nmoves to other PoPs; false: back to normal."
+          }
+        }
+      },
+      "DrainResp": {
+        "type": "object",
+        "required": [
+          "pop",
+          "drain",
+          "version"
+        ],
+        "properties": {
+          "drain": {
+            "type": "boolean"
+          },
+          "pop": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
       "EmailReq": {
         "type": "object",
         "required": [
@@ -3497,6 +3690,24 @@
           }
         ]
       },
+      "PopSeries": {
+        "type": "object",
+        "required": [
+          "pop",
+          "points"
+        ],
+        "properties": {
+          "points": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TrafficPoint"
+            }
+          },
+          "pop": {
+            "type": "string"
+          }
+        }
+      },
       "PopStatus": {
         "type": "object",
         "required": [
@@ -3808,6 +4019,70 @@
           "secret": {
             "type": "string",
             "description": "Base32 secret for manual entry."
+          }
+        }
+      },
+      "Traffic": {
+        "type": "object",
+        "required": [
+          "from",
+          "to",
+          "step",
+          "pops"
+        ],
+        "properties": {
+          "from": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "pops": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PopSeries"
+            }
+          },
+          "step": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "to": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "TrafficPoint": {
+        "type": "object",
+        "required": [
+          "ts",
+          "in_pps",
+          "in_bps",
+          "filtered_pps",
+          "clean_pps"
+        ],
+        "properties": {
+          "clean_pps": {
+            "type": "number",
+            "format": "double"
+          },
+          "filtered_pps": {
+            "type": "number",
+            "format": "double"
+          },
+          "in_bps": {
+            "type": "number",
+            "format": "double"
+          },
+          "in_pps": {
+            "type": "number",
+            "format": "double",
+            "description": "Average rates over the step (sampled estimates)."
+          },
+          "ts": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix ms at the start of the step."
           }
         }
       },

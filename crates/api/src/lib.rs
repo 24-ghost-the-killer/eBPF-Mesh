@@ -43,7 +43,8 @@ pub struct AppState {
     /// Wakes the outbox publisher after a commit that queued KV documents.
     pub outbox: Arc<Notify>,
     /// Passkeys: relying party = the portal's public URL.
-    pub webauthn: Arc<webauthn_rs::Webauthn>,
+    /// None when public_url has no domain name (passkeys need one).
+    pub webauthn: Option<Arc<webauthn_rs::Webauthn>>,
     /// scheme://host[:port] of the portal, for WebSocket Origin checks.
     pub public_origin: Arc<String>,
     /// Latest stats per PoP for /tenants/{id}/live.
@@ -69,11 +70,24 @@ impl AppState {
             .host_str()
             .context("server.public_url needs a host name")?
             .to_string();
-        let webauthn = webauthn_rs::WebauthnBuilder::new(&host, &url)
-            .context("passkeys: relying party from server.public_url")?
-            .rp_name("Sentinel-Edge")
-            .build()
-            .context("passkeys")?;
+        // WebAuthn binds passkeys to a domain name: with an IP address in
+        // public_url (some labs) passkeys are off and TOTP still works.
+        let webauthn = if host
+            .trim_matches(['[', ']'])
+            .parse::<std::net::IpAddr>()
+            .is_ok()
+        {
+            tracing::warn!("server.public_url uses an IP address: passkeys are disabled");
+            None
+        } else {
+            Some(Arc::new(
+                webauthn_rs::WebauthnBuilder::new(&host, &url)
+                    .context("passkeys: relying party from server.public_url")?
+                    .rp_name("Sentinel-Edge")
+                    .build()
+                    .context("passkeys")?,
+            ))
+        };
         Ok(AppState {
             public_origin: Arc::new(url.origin().ascii_serialization()),
             cfg: Arc::new(cfg),
@@ -81,7 +95,7 @@ impl AppState {
             mailer,
             data_key,
             outbox: Arc::new(Notify::new()),
-            webauthn: Arc::new(webauthn),
+            webauthn,
             live: LiveHub::default(),
             nats: Arc::new(OnceLock::new()),
             decision_key: None,
@@ -137,6 +151,7 @@ impl Modify for Security {
         routes::platform::killswitch, routes::platform::admin_decisions,
         routes::platform::create_decision, routes::platform::list_signing_keys,
         routes::platform::add_signing_key, routes::platform::revoke_signing_key,
+        routes::platform::drain_pop, routes::traffic::traffic,
         routes::attacks::list_attacks, routes::attacks::get_attack,
         routes::attacks::list_webhooks, routes::attacks::create_webhook,
         routes::attacks::delete_webhook, routes::attacks::test_webhook,
@@ -209,6 +224,8 @@ pub fn router(state: AppState) -> Router {
         .route("/admin/pops", get(p::admin_pops))
         .route("/admin/tenants", get(p::admin_tenants))
         .route("/admin/killswitch", post(p::killswitch))
+        .route("/admin/pops/{id}/drain", post(p::drain_pop))
+        .route("/tenants/{tid}/traffic", get(routes::traffic::traffic))
         .route(
             "/admin/decisions",
             get(p::admin_decisions).post(p::create_decision),

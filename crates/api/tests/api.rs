@@ -1268,3 +1268,81 @@ async fn signing_keys_are_admin_only() {
     assert_eq!(s, StatusCode::OK);
     assert_eq!(list[0]["issuer"], "worker-9");
 }
+
+/// Phase 8: draining a PoP goes through KV to that PoP; traffic history
+/// is per tenant and needs ClickHouse.
+#[tokio::test]
+#[ignore = "needs PostgreSQL: run with `make test-api`"]
+async fn drain_and_traffic_history() {
+    let lab = Lab::new().await;
+    let (mut c, tid) = lab.customer("drain@p.test").await;
+    let (mut other, _) = lab.customer("other@p.test").await;
+    sqlx::query("INSERT INTO pops (id, region, unicast_ip, last_seen) VALUES ('pop-2', 'eu', '10.10.2.2', now())")
+        .execute(&lab.su)
+        .await
+        .unwrap();
+    let body = json!({"drain": true});
+    let (s, _) = c
+        .call(Method::POST, "/admin/pops/pop-2/drain", Some(body.clone()))
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "platform admins only");
+    sqlx::query("UPDATE users SET is_platform_admin = true WHERE email = 'drain@p.test'")
+        .execute(&lab.su)
+        .await
+        .unwrap();
+    c.enable_totp("drain@p.test").await;
+    let (s, _) = c
+        .call(Method::POST, "/admin/pops/nope/drain", Some(body.clone()))
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let (s, r) = c
+        .call(Method::POST, "/admin/pops/pop-2/drain", Some(body))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{r}");
+    let doc = lab.outbox("platform", "pop.pop-2").await.unwrap();
+    assert_eq!(doc["drain"], true);
+    assert_eq!(doc["version"], r["version"]);
+    let (_, st) = lab.client().call(Method::GET, "/status", None).await;
+    assert_eq!(
+        st["pops"][0]["status"], "draining",
+        "public status shows it"
+    );
+    let (s, _) = c
+        .call(
+            Method::POST,
+            "/admin/pops/pop-2/drain",
+            Some(json!({"drain": false})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(
+        lab.outbox("platform", "pop.pop-2").await.unwrap()["drain"],
+        false
+    );
+    let (_, st) = lab.client().call(Method::GET, "/status", None).await;
+    assert_eq!(st["pops"][0]["status"], "up");
+
+    // Traffic history: other tenants 404, bad windows 400, no ClickHouse 503.
+    let (s, _) = other
+        .call(Method::GET, &format!("/tenants/{tid}/traffic"), None)
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let (s, e) = c
+        .call(
+            Method::GET,
+            &format!("/tenants/{tid}/traffic?step=30"),
+            None,
+        )
+        .await;
+    assert_eq!(
+        (s, e["error"].as_str()),
+        (StatusCode::BAD_REQUEST, Some("invalid_window"))
+    );
+    let (s, e) = c
+        .call(Method::GET, &format!("/tenants/{tid}/traffic"), None)
+        .await;
+    assert_eq!(
+        (s, e["error"].as_str()),
+        (StatusCode::SERVICE_UNAVAILABLE, Some("unavailable"))
+    );
+}

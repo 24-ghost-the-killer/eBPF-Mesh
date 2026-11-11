@@ -49,6 +49,12 @@ max_per_tenant = 10
 issuer = "api"                          # name of the API's own decisions (admin panel)
 signing_key_env = "SENTINEL_DECISION_KEY"  # base64 Ed25519 seed; optional
 
+[clickhouse]                  # traffic history (optional)
+url = "https://clickhouse.mgmt.example.org:8443"
+database = "sentinel"
+user = "sentinel_api"         # SELECT on traffic_1m only
+password_env = "SENTINEL_CLICKHOUSE_PASSWORD"
+
 [nats]
 url = "tls://nats.mgmt.example.org:4222"
 ca = "/etc/sentinel/nats-ca.pem"

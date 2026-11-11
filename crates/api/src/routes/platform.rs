@@ -404,3 +404,63 @@ pub async fn revoke_signing_key(
     state.outbox.notify_one();
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
+
+#[derive(Deserialize, ToSchema)]
+pub struct Drain {
+    /// true: announce the anycast prefixes with a longer AS path so traffic
+    /// moves to other PoPs; false: back to normal.
+    pub drain: bool,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct DrainResp {
+    pub pop: String,
+    pub drain: bool,
+    pub version: u64,
+}
+
+/// Drain a PoP (or undo it) through its BGP announcements (ADR 0023).
+#[utoipa::path(post, path = "/api/v1/admin/pops/{id}/drain", tag = "admin",
+    params(("id" = String, Path)), request_body = Drain,
+    responses((status = 200, body = DrainResp), (status = 403, body = ErrorBody),
+        (status = 404, body = ErrorBody)),
+    security(("session" = [])))]
+pub async fn drain_pop(
+    State(state): State<AppState>,
+    c: Caller,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Json(req): Json<Drain>,
+) -> ApiResult<Json<DrainResp>> {
+    c.require_platform_admin()?;
+    let mut tx = db::begin(&state.pool, admin_scope(&c)).await?;
+    let n = sqlx::query("UPDATE pops SET status = $2 WHERE id = $1")
+        .bind(&id)
+        .bind(if req.drain { "draining" } else { "active" })
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+    if n == 0 {
+        return Err(crate::error::ApiError::not_found());
+    }
+    let version = kvsync::enqueue_pop(&mut tx, &id, req.drain).await?;
+    db::audit(
+        &mut tx,
+        c.user_id,
+        None,
+        if req.drain {
+            "pop.drain"
+        } else {
+            "pop.undrain"
+        },
+        serde_json::json!({"pop": id}),
+        c.ip,
+    )
+    .await?;
+    tx.commit().await?;
+    state.outbox.notify_one();
+    Ok(Json(DrainResp {
+        pop: id,
+        drain: req.drain,
+        version,
+    }))
+}

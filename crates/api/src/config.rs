@@ -31,6 +31,30 @@ pub struct Config {
     pub webhooks: WebhooksCfg,
     #[serde(default)]
     pub decisions: DecisionsCfg,
+    /// Traffic history (ADR 0024); without it /traffic answers 503.
+    #[serde(default)]
+    pub clickhouse: Option<ClickHouseCfg>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClickHouseCfg {
+    /// HTTP interface, e.g. https://clickhouse.mgmt:8443
+    pub url: String,
+    #[serde(default = "d_ch_db")]
+    pub database: String,
+    /// Read-only user (SELECT on traffic_1m).
+    pub user: String,
+    /// Env var with the user's password.
+    #[serde(default = "d_ch_pw_env")]
+    pub password_env: String,
+}
+
+fn d_ch_db() -> String {
+    "sentinel".into()
+}
+fn d_ch_pw_env() -> String {
+    "SENTINEL_CLICKHOUSE_PASSWORD".into()
 }
 
 #[derive(Debug, Deserialize)]
@@ -323,6 +347,11 @@ impl Config {
         }
         sentinel_common::msg::validate_pop_id(&self.decisions.issuer)
             .map_err(|e| anyhow::anyhow!("decisions.issuer: {e}"))?;
+        if let Some(c) = &self.clickhouse {
+            if !(c.url.starts_with("https://") || c.url.starts_with("http://")) {
+                bail!("clickhouse.url must be http(s)://");
+            }
+        }
         if !(1..=30).contains(&self.webhooks.timeout_s) {
             bail!("webhooks.timeout_s must be 1..=30");
         }

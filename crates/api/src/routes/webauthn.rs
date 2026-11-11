@@ -98,6 +98,16 @@ async fn passkeys_of(state: &AppState, user: i64) -> ApiResult<Vec<(i64, Passkey
         .collect()
 }
 
+fn webauthn(state: &AppState) -> ApiResult<&webauthn_rs::Webauthn> {
+    state.webauthn.as_deref().ok_or_else(|| {
+        ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "passkeys_unavailable",
+            "passkeys need the portal to have a domain name",
+        )
+    })
+}
+
 fn webauthn_err(e: impl std::fmt::Display) -> ApiError {
     tracing::info!("webauthn: {e}");
     ApiError::bad_request("passkey_rejected", "the passkey could not be verified")
@@ -126,8 +136,7 @@ pub async fn register_start(State(state): State<AppState>, c: Caller) -> ApiResu
             .await?;
     let handle = Uuid::parse_str(&handle).map_err(anyhow::Error::from)?;
     let exclude = existing.iter().map(|(_, p)| p.cred_id().clone()).collect();
-    let (ccr, reg) = state
-        .webauthn
+    let (ccr, reg) = webauthn(&state)?
         .start_passkey_registration(handle, &email, &email, Some(exclude))
         .map_err(webauthn_err)?;
     save_state::<PasskeyRegistration>(&state, &session, "register", &reg).await?;
@@ -173,8 +182,7 @@ pub async fn register_finish(
         ));
     }
     let reg: PasskeyRegistration = take_state(&state, &session, "register").await?;
-    let pk = state
-        .webauthn
+    let pk = webauthn(&state)?
         .finish_passkey_registration(&req.credential, &reg)
         .map_err(webauthn_err)?;
     let mut tx = db::begin(&state.pool, c.scope(None)).await?;
@@ -242,8 +250,7 @@ pub async fn login_start(
             "this account has no passkeys",
         ));
     }
-    let (rcr, auth) = state
-        .webauthn
+    let (rcr, auth) = webauthn(&state)?
         .start_passkey_authentication(&keys)
         .map_err(webauthn_err)?;
     save_state::<PasskeyAuthentication>(&state, &session, "login", &auth).await?;
@@ -289,10 +296,7 @@ pub async fn login_finish(
         ));
     }
     let auth: PasskeyAuthentication = take_state(&state, &session, "login").await?;
-    let result = match state
-        .webauthn
-        .finish_passkey_authentication(&req.credential, &auth)
-    {
+    let result = match webauthn(&state)?.finish_passkey_authentication(&req.credential, &auth) {
         Ok(r) => r,
         Err(e) => {
             sqlx::query("INSERT INTO auth_failures (email, ip) VALUES ($1, $2::inet)")

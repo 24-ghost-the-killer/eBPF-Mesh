@@ -20,9 +20,9 @@ use tokio::sync::Notify;
 use tracing::{info, warn};
 
 use sentinel_common::msg::{
-    AssetDoc, ConfigAck, FragDoc, HealthMsg, ModeDoc, PlatformDoc, PolicyDoc, RuleDoc, RulesDoc,
-    ServiceDoc, ServicesDoc, StatsMsg, BUCKET_PLATFORM, BUCKET_RULES, BUCKET_SERVICES,
-    BUCKET_TENANTS, PLATFORM_KEY, SCHEMA_V,
+    pop_key, AssetDoc, ConfigAck, FragDoc, HealthMsg, ModeDoc, PlatformDoc, PolicyDoc, PopDoc,
+    RuleDoc, RulesDoc, ServiceDoc, ServicesDoc, StatsMsg, BUCKET_PLATFORM, BUCKET_RULES,
+    BUCKET_SERVICES, BUCKET_TENANTS, PLATFORM_KEY, SCHEMA_V,
 };
 use sentinel_common::prefix::Prefix;
 
@@ -211,6 +211,26 @@ pub async fn enqueue_platform(tx: &mut Tx, observe: bool) -> Result<u64> {
         tx,
         BUCKET_PLATFORM,
         PLATFORM_KEY,
+        Some(serde_json::to_value(doc)?),
+    )
+    .await?;
+    Ok(version as u64)
+}
+
+/// platform/pop.<id>: drain flag of one PoP (ADR 0023).
+pub async fn enqueue_pop(tx: &mut Tx, pop: &str, drain: bool) -> Result<u64> {
+    let version: i64 = sqlx::query_scalar("SELECT nextval('config_version_seq')")
+        .fetch_one(&mut **tx)
+        .await?;
+    let doc = PopDoc {
+        v: SCHEMA_V,
+        version: version as u64,
+        drain,
+    };
+    enqueue(
+        tx,
+        BUCKET_PLATFORM,
+        &pop_key(pop),
         Some(serde_json::to_value(doc)?),
     )
     .await?;
