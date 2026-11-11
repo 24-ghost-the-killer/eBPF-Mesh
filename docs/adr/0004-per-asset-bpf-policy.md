@@ -1,6 +1,6 @@
 # 0004 BPF policy is per protected prefix (asset), not per tenant
 
-**Status:** Proposed (implemented in phase 3)
+**Status:** Accepted (implemented in phase 3)
 
 **Context.** Spec §5.2/§5.3 key origin IP, flags and services by *tenant*
 (`xs_tenant`, `xs_services {tenant, proto, port}`), while the data model

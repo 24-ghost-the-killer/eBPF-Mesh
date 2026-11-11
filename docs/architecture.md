@@ -27,17 +27,18 @@ Browser -> Web app (Next.js) -> Control-plane API (axum)
 - The packet path never waits for userspace. Every dynamic mitigation has a
   TTL enforced inside XDP.
 
-## Dataplane (phases 1-2)
+## Dataplane (phases 1-3)
 
 ### Pipeline
 
 ```
 frame
  │ 1 parse ─────────── malformed ───────────────► DROP_MALFORMED   [global]
- │                     non-IP (ARP, LLDP…) ─────► PASS_NON_IP
- │ 2 local ─────────── dst = PoP IP, IPv6 ND ───► PASS_LOCAL
+ │                     non-IP (ARP, LLDP…) ─────► PASS_NON_IP (kernel)
+ │ r return ────────── dst = tunnel endpoint ───► TX_RETURN / DROP_RETURN
+ │ 2 local ─────────── dst = PoP IP, IPv6 ND ───► PASS_LOCAL (kernel)
  │ 3 bogon source ──────────────────────────────► DROP_BOGON       [global]
- │ 4 tenant lookup     (phase 3; now: one default policy, tenant 0)
+ │ 4 asset lookup ──── none ────────────────────► DROP_NO_TENANT   [global]
  │ 5 allowlist ─────── tenant, then global ─────► PASS_ALLOW (skips 6-8)
  │ 6 blocklist ─────── expires_ns > now ────────► DROP_BLOCK       [policy]
  │ 7 services ──────── proto+port (ICMP errors ─► DROP_SERVICE     [policy]
@@ -47,13 +48,33 @@ frame
  │   SYN cookies ───── unverified SYN ──────────► TX_SYN_CHALLENGE (XDP_TX)
  │                     RST with valid cookie ───► SYN_VERIFIED (consumed)
  │                     other TCP, unverified ───► DROP_UNVERIFIED  [policy]
- └──────────────────────────────────────────────► PASS (or FRAGMENT)
+ │10 deliver ───────── IPIP / 6in4 to origin ───► XDP_TX (verdict kept)
+ │                     too big / no PoP IP ─────► DROP_TOO_BIG / DROP_TUNNEL
 ```
 
 [global] drops are suspended only by the kill switch (`XS_CFG_F_OBSERVE`).
-[policy] drops and challenges happen only when the policy has
-`XS_P_MITIGATE`; otherwise the verdict is counted and the packet passed
-(observe mode, the default). Phase 3 adds IPIP encapsulation after step 8.
+[policy] drops and challenges happen only when the asset's policy has
+`XS_P_MITIGATE`; otherwise (observe mode, the default) the verdict is counted
+and the packet is still delivered. Step 9 (sampling) arrives with the agent.
+
+The main program parses, looks up the asset and dispatches; policy
+evaluation, delivery, the return path and MSS clamping are global BPF
+functions that the verifier checks independently
+([ADR 0013](adr/0013-bpf-global-functions.md)).
+
+### Tunnel delivery and return
+
+```
+client ──► router ──► PoP XDP ──IPIP(src PoP IP, dst origin)──► router ──► origin
+                                                                      │ decapsulates,
+                                                                      │ sees client IP
+client ◄── router ◄── PoP XDP ◄──IPIP(src origin, dst tunnel EP)──────┘
+                     validate origin, clamp MSS, decapsulate
+```
+
+The tunnel endpoint is an anycast address, so replies reach the PoP nearest
+the origin. With DSR the origin replies directly instead. See
+[ADR 0012](adr/0012-tunnel-delivery-and-return.md).
 
 ### SYN-cookie source verification
 
@@ -62,7 +83,7 @@ client                      XDP (PoP)                         origin
 SYN(isn) ─────────────────► unverified → XDP_TX SYN-ACK
          ◄───────────────── (seq=h>>32, ack=cookie ≠ isn+1)
 RST(seq=cookie) ──────────► valid → xs_verified[src]=now+ttl, drop
-SYN(isn) (retransmit) ────► verified → pass ────────────────► handshake
+SYN(isn) (retransmit) ────► verified → tunnel ──────────────► handshake
 ```
 
 cookie = SipHash-2-4(key, saddr, daddr, sport, dport, ⌊now / 2^34 ns⌋); the
@@ -89,8 +110,8 @@ Trailing Ethernet padding (IP length shorter than the frame) is valid.
 
 | Map | Type | Key → Value | Written by |
 |---|---|---|---|
-| `xs_cfg` | ARRAY(1) | 0 → kill switch, PoP IPv4/IPv6, SYN-cookie key, verify TTL | `sentinelctl attach/config/observe/syncookie` |
-| `xs_policy` | ARRAY(1) | 0 → flags (mitigate, syncookie, services, fragments), pps, burst | `sentinelctl policy` (phase 2 only) |
+| `xs_cfg` | ARRAY(1) | 0 → kill switch, PoP IPv4/IPv6, tunnel endpoint, next-hop MAC, uplink MTU, SYN-cookie key, verify TTL | `sentinelctl attach/config/observe/syncookie` |
+| `xs_tenants`, `xs_tenants6` | LPM_TRIE | protected prefix → asset {tenant, id, origin, policy {flags, pps, burst}} | `sentinelctl asset/policy` |
 | `xs_allow`, `xs_allow6` | LPM_TRIE | {32+len, tenant, src} → {expires_ns (0 = permanent), reason} | `sentinelctl allow` |
 | `xs_block`, `xs_block6` | LPM_TRIE | same → {expires_ns (> 0), reason} | `sentinelctl block` |
 | `xs_services` | HASH | {asset, proto, port (0 = all)} → 1 | `sentinelctl service` |

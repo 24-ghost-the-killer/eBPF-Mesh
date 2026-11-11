@@ -5,8 +5,9 @@
 - Linux kernel 6.x (native XDP, bpf_link for XDP, BPF_PROG_TEST_RUN)
 - clang/LLVM, libbpf headers (`libbpf-dev`), `libelf-dev`, `zlib1g-dev`, `pkg-config`
 - Rust (version pinned in `rust-toolchain.toml`; rustup picks it up)
+- Kernel 5.18+ for `bpf_xdp_load_bytes`/`store_bytes` (6.x recommended)
 - For tests: `iproute2` (with libbpf support for `ip link ... xdp obj`),
-  `iputils-ping`, `jq`, `curl`, `python3`, `nsenter` (util-linux)
+  `iputils-ping`, `jq`, `curl`, `ethtool`, `python3`, `nsenter` (util-linux)
 - bpffs mounted at `/sys/fs/bpf` (systemd does this; otherwise
   `mount -t bpf bpf /sys/fs/bpf`)
 
@@ -15,8 +16,8 @@
 ```sh
 make                         # build/ebpf/xdp_main.o + target/debug/sentinelctl
 make test                    # cargo fmt --check, clippy -D warnings, cargo test
-sudo make test-bpf           # 188 BPF_PROG_TEST_RUN checks
-sudo make test-integration   # veth_counts, policy_live, synflood
+sudo make test-bpf           # 270 BPF_PROG_TEST_RUN checks
+sudo make test-integration   # veth_counts, tunnel, policy_live, synflood
 ```
 
 `sudo make test-integration` does not build the Rust binaries (cargo is
@@ -25,6 +26,7 @@ usually not on root's PATH), so run `make` as your normal user first.
 | Integration suite | Proves |
 |---|---|
 | `veth_counts.sh` | native attach, exact per-verdict counters, generic refused, clean detach |
+| `tunnel.sh` | phase 3 acceptance: delivery through the tunnel, the origin sees the real client IP, tunnel return and DSR, 1 MiB both ways, oversize counted, MSS clamp rescues a wrong customer MTU |
 | `policy_live.sh` | rate limit, block/allow with TTL and gc, observe vs mitigate, kill switch, services, PoP traffic bypass |
 | `synflood.sh` | phase 2 acceptance: a spoofed SYN flood never reaches the server while `curl` succeeds; control run in observe mode |
 
@@ -36,6 +38,15 @@ make docker-test             # all suites in a privileged Linux container
 make docker-shell            # interactive shell, repo mounted at /src
 ```
 
+The integration suites use three network namespaces (internet router +
+client, PoP, origin) joined by veth pairs; see `tests/integration/lib.sh`.
+They switch off TX checksum offload on the veths: veth leaves checksums
+half-computed for "hardware", and XDP_TX would forward them that way. On
+Docker Desktop's kernel the origin uses the fallback `tunl0` device
+(creating an IPIP device in a namespace has crashed that VM); elsewhere the
+generated script creates `sentinel0`. Override with
+`SENTINEL_TEST_TUNNEL_DEV`.
+
 Cargo's registry and target directory live in Docker volumes
 (`sentinel-cargo`, `sentinel-target`) so Linux artifacts never mix with the
 Mac's `target/`.
@@ -43,29 +54,36 @@ Mac's `target/`.
 ## Operating sentinelctl
 
 ```sh
-# attach (PoP addresses also via XS_POP_IP4 / XS_POP_IP6)
+# attach (PoP addresses also via XS_POP_IP4 / XS_POP_IP6; MTU is read from the NIC)
 sentinelctl attach --iface eth0 --pop-ip4 10.10.1.1 --pop-ip6 2001:db8:100::1
+sentinelctl config set --tunnel-ep4 198.51.100.1 --nexthop-mac 02:00:00:00:00:fe
 sentinelctl detach --iface eth0
+
+# protect a prefix (new assets observe only)
+sentinelctl asset add 198.51.100.10/32 --tenant 42 --origin 192.0.2.10
+sentinelctl asset list
+sentinelctl asset script 1 [--return tunnel|dsr] > sentinel-tunnel.sh
+sentinelctl asset del 1                              # also removes its services
+
+# per-asset policy (by id or exact prefix)
+sentinelctl policy show --asset 1
+sentinelctl service add --asset 1 --proto tcp --port 443   # omit --port: whole protocol
+sentinelctl policy set --asset 1 --enforce-services on --syncookies on \
+    --pps-per-src 1000 --burst 2000 --fragments drop
+sentinelctl policy set --asset 1 --mitigate on
 
 # what is happening
 sentinelctl stats [--watch --interval 1]
-sentinelctl --json stats        # {"entries":[{"tenant":0,"verdict":"pass","pkts":..,"bytes":..}]}
-
-# the default policy (phase 2: applies to all protected traffic)
-sentinelctl policy show
-sentinelctl service add --proto tcp --port 443      # omit --port: whole protocol
-sentinelctl policy set --enforce-services on --syncookies on \
-    --pps-per-src 1000 --burst 2000 --fragments drop
-sentinelctl policy set --mitigate on                # default is observe
+sentinelctl --json stats        # {"entries":[{"tenant":42,"verdict":"pass","pkts":..,"bytes":..}]}
 
 # rules (tenant 0 = global; IPv4 or IPv6; /0 is refused)
 sentinelctl block add 203.0.113.0/24 --ttl 10m      # blocks always expire
-sentinelctl allow add 192.0.2.10                    # permanent unless --ttl
+sentinelctl allow add 192.0.2.10 --tenant 42        # permanent unless --ttl
 sentinelctl block list | allow list | block del 203.0.113.0/24
 sentinelctl gc                                      # remove expired entries
 
 # PoP-wide
-sentinelctl config show | config set --verify-ttl 5m
+sentinelctl config show | config set --verify-ttl 5m | config set --mtu 9000
 sentinelctl syncookie rotate
 sentinelctl observe on          # KILL SWITCH: count everything, drop nothing
 sentinelctl observe off
@@ -75,11 +93,20 @@ Every flag has an environment equivalent where it makes sense (see
 `.env.example`): `XS_IFACE`, `SENTINEL_BPF_OBJ`, `SENTINEL_PIN_DIR`,
 `XS_POP_IP4`, `XS_POP_IP6`.
 
+**Onboarding a customer server.** `asset add` with the server's address as
+`--origin`; give the customer `asset script <id>`; they run it as root
+(`sh sentinel-tunnel.sh`, `... down` to undo; safe to re-run). It creates an
+IPIP (or `sit` for IPv6) device with MTU 1480 and no fixed remote, puts the
+protected prefix on `lo`, and routes replies from it back through the tunnel
+to the anycast tunnel endpoint. `--return dsr` instead lets replies leave
+directly with the protected IP as source (needs a provider without BCP38
+filtering) and lowers the advertised MSS so client packets fit the tunnel.
+
 **Rolling out a policy.** Configure services and limits in observe mode, watch
 `sentinelctl stats` until the `drop_*` counters only show traffic you really
-want dropped, then `policy set --mitigate on`. With SYN cookies on, observe
-mode counts all non-SYN TCP as `drop_unverified` (nothing is verified without
-challenges), so judge those counters only after switching on.
+want dropped, then `policy set --asset <id> --mitigate on`. With SYN cookies
+on, observe mode counts all non-SYN TCP as `drop_unverified` (nothing is
+verified without challenges), so judge those counters only after switching on.
 
 ## sentinel-gen (lab traffic generator)
 
@@ -127,3 +154,8 @@ XDP sees it (rx-vlan offload). On a PoP with tagged uplinks, disable it:
 | `XDP program is not attached` (stats) | nothing attached with this `SENTINEL_PIN_DIR` |
 | clients hang ~1 s on first connect | SYN cookies on and the client never answers the challenge with RST (some middleboxes drop it); allowlist the client network |
 | `syncookie key MISSING` in `config show` | maps were created by an old build; detach and attach again (SYNs pass meanwhile) |
+| `drop_no_tenant` for a customer's traffic | no asset covers the destination: `asset list` |
+| `drop_tunnel` | no PoP IPv4 configured (`config set --pop-ip4`) |
+| `drop_too_big` | packets above uplink MTU − 20; check the customer's MSS / tunnel MTU 1480 |
+| `drop_return` | replies from an unregistered origin, or with a source that is not that origin's asset |
+| customer sees nothing in the tunnel | provider filters IP protocol 4/41, or rp_filter on the origin; the script turns rp_filter off |
