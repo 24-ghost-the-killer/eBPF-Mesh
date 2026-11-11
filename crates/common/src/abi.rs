@@ -10,7 +10,7 @@
 use std::mem::{align_of, size_of};
 use std::net::{Ipv4Addr, Ipv6Addr};
 
-pub const XS_ABI_VERSION: u32 = 2;
+pub const XS_ABI_VERSION: u32 = 3;
 pub const XS_MAX_VLAN_TAGS: u32 = 2;
 pub const XS_MAX_IPV6_EXT_HDRS: u32 = 4;
 pub const XS_STATS_MAX_ENTRIES: u32 = 65536;
@@ -18,6 +18,9 @@ pub const XS_RULES_MAX_ENTRIES: u32 = 65536;
 pub const XS_SERVICES_MAX_ENTRIES: u32 = 4096;
 pub const XS_RL_MAX_ENTRIES: u32 = 262144;
 pub const XS_VERIFIED_MAX_ENTRIES: u32 = 262144;
+pub const XS_TENANTS_MAX_ENTRIES: u32 = 65536;
+pub const XS_TUNNEL_OVERHEAD: u32 = 20;
+pub const XS_DEFAULT_MTU: u32 = 1500;
 pub const XS_TENANT_GLOBAL: u32 = 0;
 pub const XS_RL_V6_PREFIX: u32 = 64;
 pub const XS_VERIFY_TTL_DEFAULT_S: u32 = 300;
@@ -30,7 +33,7 @@ pub const XS_P_SERVICES: u32 = 1 << 2;
 pub const XS_P_ALLOW_FRAG: u32 = 1 << 3;
 
 /// Number of defined verdicts (`XS_V__COUNT`).
-pub const XS_V_COUNT: u32 = 14;
+pub const XS_V_COUNT: u32 = 19;
 
 /// Packet verdicts (`enum xs_verdict`). Append-only.
 #[repr(u32)]
@@ -50,6 +53,11 @@ pub enum Verdict {
     TxSynChallenge = 11,
     SynVerified = 12,
     DropUnverified = 13,
+    DropNoTenant = 14,
+    DropTooBig = 15,
+    DropTunnel = 16,
+    TxReturn = 17,
+    DropReturn = 18,
 }
 
 impl Verdict {
@@ -68,6 +76,11 @@ impl Verdict {
         Verdict::TxSynChallenge,
         Verdict::SynVerified,
         Verdict::DropUnverified,
+        Verdict::DropNoTenant,
+        Verdict::DropTooBig,
+        Verdict::DropTunnel,
+        Verdict::TxReturn,
+        Verdict::DropReturn,
     ];
 
     /// Stable name used in CLI output, JSON and (later) NATS messages.
@@ -88,6 +101,11 @@ impl Verdict {
             Verdict::TxSynChallenge => "tx_syn_challenge",
             Verdict::SynVerified => "syn_verified",
             Verdict::DropUnverified => "drop_unverified",
+            Verdict::DropNoTenant => "drop_no_tenant",
+            Verdict::DropTooBig => "drop_too_big",
+            Verdict::DropTunnel => "drop_tunnel",
+            Verdict::TxReturn => "tx_return",
+            Verdict::DropReturn => "drop_return",
         }
     }
 
@@ -107,6 +125,10 @@ impl Verdict {
                 | Verdict::DropRatelimit
                 | Verdict::SynVerified
                 | Verdict::DropUnverified
+                | Verdict::DropNoTenant
+                | Verdict::DropTooBig
+                | Verdict::DropTunnel
+                | Verdict::DropReturn
         )
     }
 }
@@ -163,7 +185,12 @@ pub struct XsCfg {
     pub cookie_key: [u64; 2],
     /// 0 = XS_VERIFY_TTL_DEFAULT_S.
     pub verify_ttl_s: u32,
-    pub _pad: u32,
+    /// Anycast endpoint for origin replies (network order); zero = none.
+    pub tunnel_ep4: [u8; 4],
+    /// Uplink router MAC; zero = send back to the frame's sender.
+    pub nexthop_mac: [u8; 6],
+    /// 0 = XS_DEFAULT_MTU.
+    pub uplink_mtu: u16,
 }
 
 impl XsCfg {
@@ -173,6 +200,19 @@ impl XsCfg {
     pub fn pop_ip6(&self) -> Option<Ipv6Addr> {
         (self.pop_ip6 != [0; 16]).then(|| Ipv6Addr::from(self.pop_ip6))
     }
+    pub fn tunnel_ep4(&self) -> Option<Ipv4Addr> {
+        (self.tunnel_ep4 != [0; 4]).then(|| Ipv4Addr::from(self.tunnel_ep4))
+    }
+    pub fn nexthop_mac(&self) -> Option<[u8; 6]> {
+        (self.nexthop_mac != [0; 6]).then_some(self.nexthop_mac)
+    }
+    pub fn uplink_mtu(&self) -> u32 {
+        if self.uplink_mtu == 0 {
+            XS_DEFAULT_MTU
+        } else {
+            self.uplink_mtu as u32
+        }
+    }
     pub fn verify_ttl_s(&self) -> u32 {
         if self.verify_ttl_s == 0 {
             XS_VERIFY_TTL_DEFAULT_S
@@ -180,6 +220,34 @@ impl XsCfg {
             self.verify_ttl_s
         }
     }
+}
+
+/// `struct xs_tenant_key` (LPM key; prefixlen = prefix length)
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct XsTenantKey {
+    pub prefixlen: u32,
+    pub addr: [u8; 4],
+}
+
+/// `struct xs_tenant6_key`
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct XsTenant6Key {
+    pub prefixlen: u32,
+    pub addr: [u8; 16],
+}
+
+/// `struct xs_asset`: one protected prefix (ADR 0004).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct XsAsset {
+    pub tenant: u32,
+    pub asset: u32,
+    /// Tunnel destination (network order).
+    pub origin4: [u8; 4],
+    pub _pad: u32,
+    pub policy: XsPolicy,
 }
 
 /// `struct xs_policy`
@@ -276,7 +344,10 @@ pub struct XsStatsVal {
     pub bytes: u64,
 }
 
-const _: () = assert!(size_of::<XsCfg>() == 48 && align_of::<XsCfg>() == 8);
+const _: () = assert!(size_of::<XsCfg>() == 56 && align_of::<XsCfg>() == 8);
+const _: () = assert!(size_of::<XsTenantKey>() == 8 && align_of::<XsTenantKey>() == 4);
+const _: () = assert!(size_of::<XsTenant6Key>() == 20 && align_of::<XsTenant6Key>() == 4);
+const _: () = assert!(size_of::<XsAsset>() == 32 && align_of::<XsAsset>() == 4);
 const _: () = assert!(size_of::<XsPolicy>() == 16 && align_of::<XsPolicy>() == 4);
 const _: () = assert!(size_of::<XsSrcKey>() == 12 && align_of::<XsSrcKey>() == 4);
 const _: () = assert!(size_of::<XsSrc6Key>() == 24 && align_of::<XsSrc6Key>() == 4);
@@ -303,6 +374,9 @@ impl W {
         self.0.extend_from_slice(b);
         self
     }
+    fn u16(self, v: u16) -> Self {
+        self.u8s(&v.to_ne_bytes())
+    }
     fn u32(self, v: u32) -> Self {
         self.u8s(&v.to_ne_bytes())
     }
@@ -317,6 +391,9 @@ impl R<'_> {
         let (head, rest) = self.0.split_at(N);
         self.0 = rest;
         head.try_into().expect("split_at(N)")
+    }
+    fn u16(&mut self) -> u16 {
+        u16::from_ne_bytes(self.arr())
     }
     fn u32(&mut self) -> u32 {
         u32::from_ne_bytes(self.arr())
@@ -357,14 +434,54 @@ map_bytes!(
         .u64(s.cookie_key[0])
         .u64(s.cookie_key[1])
         .u32(s.verify_ttl_s)
-        .u32(s._pad),
+        .u8s(&s.tunnel_ep4)
+        .u8s(&s.nexthop_mac)
+        .u16(s.uplink_mtu),
     |r| XsCfg {
         flags: r.u32(),
         pop_ip4: r.arr(),
         pop_ip6: r.arr(),
         cookie_key: [r.u64(), r.u64()],
         verify_ttl_s: r.u32(),
+        tunnel_ep4: r.arr(),
+        nexthop_mac: r.arr(),
+        uplink_mtu: r.u16(),
+    }
+);
+map_bytes!(XsTenantKey, |s, w| w.u32(s.prefixlen).u8s(&s.addr), |r| {
+    XsTenantKey {
+        prefixlen: r.u32(),
+        addr: r.arr(),
+    }
+});
+map_bytes!(XsTenant6Key, |s, w| w.u32(s.prefixlen).u8s(&s.addr), |r| {
+    XsTenant6Key {
+        prefixlen: r.u32(),
+        addr: r.arr(),
+    }
+});
+map_bytes!(
+    XsAsset,
+    |s, w| w
+        .u32(s.tenant)
+        .u32(s.asset)
+        .u8s(&s.origin4)
+        .u32(s._pad)
+        .u32(s.policy.flags)
+        .u32(s.policy.pps_per_src)
+        .u32(s.policy.burst)
+        .u32(s.policy._pad),
+    |r| XsAsset {
+        tenant: r.u32(),
+        asset: r.u32(),
+        origin4: r.arr(),
         _pad: r.u32(),
+        policy: XsPolicy {
+            flags: r.u32(),
+            pps_per_src: r.u32(),
+            burst: r.u32(),
+            _pad: r.u32()
+        },
     }
 );
 map_bytes!(
@@ -525,6 +642,9 @@ mod tests {
             ("XS_SERVICES_MAX_ENTRIES", XS_SERVICES_MAX_ENTRIES),
             ("XS_RL_MAX_ENTRIES", XS_RL_MAX_ENTRIES),
             ("XS_VERIFIED_MAX_ENTRIES", XS_VERIFIED_MAX_ENTRIES),
+            ("XS_TENANTS_MAX_ENTRIES", XS_TENANTS_MAX_ENTRIES),
+            ("XS_TUNNEL_OVERHEAD", XS_TUNNEL_OVERHEAD),
+            ("XS_DEFAULT_MTU", XS_DEFAULT_MTU),
             ("XS_TENANT_GLOBAL", XS_TENANT_GLOBAL),
             ("XS_RL_V6_PREFIX", XS_RL_V6_PREFIX),
             ("XS_VERIFY_TTL_DEFAULT_S", XS_VERIFY_TTL_DEFAULT_S),
@@ -587,6 +707,9 @@ mod tests {
         let rust = [
             l!("xs_cfg", XsCfg),
             l!("xs_policy", XsPolicy),
+            l!("xs_tenant_key", XsTenantKey),
+            l!("xs_tenant6_key", XsTenant6Key),
+            l!("xs_asset", XsAsset),
             l!("xs_src_key", XsSrcKey),
             l!("xs_src6_key", XsSrc6Key),
             l!("xs_rule", XsRule),
@@ -634,7 +757,29 @@ mod tests {
             pop_ip6: [0x20, 1, 0xd, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
             cookie_key: [u64::MAX, 7],
             verify_ttl_s: 300,
+            tunnel_ep4: [198, 51, 100, 1],
+            nexthop_mac: [2, 0, 0, 0, 0, 1],
+            uplink_mtu: 9000,
+        });
+        round_trip(XsTenantKey {
+            prefixlen: 32,
+            addr: [198, 51, 100, 10],
+        });
+        round_trip(XsTenant6Key {
+            prefixlen: 128,
+            addr: [7; 16],
+        });
+        round_trip(XsAsset {
+            tenant: 42,
+            asset: 7,
+            origin4: [192, 0, 2, 10],
             _pad: 0,
+            policy: XsPolicy {
+                flags: 3,
+                pps_per_src: 100,
+                burst: 200,
+                _pad: 0,
+            },
         });
         round_trip(XsPolicy {
             flags: 5,
@@ -688,5 +833,13 @@ mod tests {
         assert_eq!(c.pop_ip4(), Some(Ipv4Addr::new(10, 10, 1, 1)));
         assert_eq!(c.pop_ip6(), None);
         assert_eq!(c.verify_ttl_s(), XS_VERIFY_TTL_DEFAULT_S);
+        assert_eq!(c.uplink_mtu(), 1500);
+        assert_eq!(c.tunnel_ep4(), None);
+        assert_eq!(c.nexthop_mac(), None);
+        let a = XsAsset {
+            origin4: [192, 0, 2, 10],
+            ..Default::default()
+        };
+        assert_eq!(a.to_bytes()[8..12], [192, 0, 2, 10]);
     }
 }

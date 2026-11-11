@@ -8,4 +8,5 @@ pub mod lab;
 pub mod pin;
 pub mod prefix;
 pub mod stats;
+pub mod tunnel;
 pub mod units;

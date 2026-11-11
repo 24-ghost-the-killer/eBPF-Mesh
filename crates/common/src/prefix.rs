@@ -6,7 +6,7 @@ use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::str::FromStr;
 
-use crate::abi::{XsSrc6Key, XsSrcKey};
+use crate::abi::{XsSrc6Key, XsSrcKey, XsTenant6Key, XsTenantKey};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Prefix {
@@ -125,6 +125,36 @@ impl Prefix {
         }
     }
 
+    /// xs_tenants key (IPv4 prefixes only).
+    pub fn tenant_key4(&self) -> Option<XsTenantKey> {
+        match *self {
+            Prefix::V4(a, l) => Some(XsTenantKey {
+                prefixlen: l as u32,
+                addr: a.octets(),
+            }),
+            Prefix::V6(..) => None,
+        }
+    }
+
+    /// xs_tenants6 key (IPv6 prefixes only).
+    pub fn tenant_key6(&self) -> Option<XsTenant6Key> {
+        match *self {
+            Prefix::V6(a, l) => Some(XsTenant6Key {
+                prefixlen: l as u32,
+                addr: a.octets(),
+            }),
+            Prefix::V4(..) => None,
+        }
+    }
+
+    pub fn from_tenant_key4(k: &XsTenantKey) -> Option<Prefix> {
+        (k.prefixlen <= 32).then(|| Prefix::V4(Ipv4Addr::from(k.addr), k.prefixlen as u8))
+    }
+
+    pub fn from_tenant_key6(k: &XsTenant6Key) -> Option<Prefix> {
+        (k.prefixlen <= 128).then(|| Prefix::V6(Ipv6Addr::from(k.addr), k.prefixlen as u8))
+    }
+
     pub fn from_key4(k: &XsSrcKey) -> Option<(u32, Prefix)> {
         let len = k.prefixlen.checked_sub(32).filter(|l| *l <= 32)? as u8;
         Some((k.tenant, Prefix::V4(Ipv4Addr::from(k.src), len)))
@@ -234,5 +264,16 @@ mod tests {
             }),
             None
         );
+
+        let t = p("198.51.100.8/29");
+        let k = t.tenant_key4().unwrap();
+        assert_eq!((k.prefixlen, k.addr), (29, [198, 51, 100, 8]));
+        assert_eq!(Prefix::from_tenant_key4(&k), Some(t));
+        let t6 = p("2001:db8:100::10/128");
+        assert_eq!(
+            Prefix::from_tenant_key6(&t6.tenant_key6().unwrap()),
+            Some(t6)
+        );
+        assert!(t.tenant_key6().is_none() && t6.tenant_key4().is_none());
     }
 }
