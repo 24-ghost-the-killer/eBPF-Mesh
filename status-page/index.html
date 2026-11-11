@@ -1,0 +1,42 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<!-- Sentinel-Edge status page: static files, hosted apart from the platform
+     (ADR 0025). Configure config.js (from config.example.js). -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src *; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta name="referrer" content="no-referrer">
+  <title>Sentinel-Edge status</title>
+  <meta name="description" content="Current status of the Sentinel-Edge network and past incidents.">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <header><div class="wrap"><span class="logo">Sentinel-Edge</span> <span class="muted">status</span></div></header>
+  <main id="main" class="wrap">
+    <h1 id="summary" aria-live="polite">Checking the network…</h1>
+    <p id="updated" class="muted"></p>
+    <div id="banner" class="banner" role="alert" hidden></div>
+    <section aria-labelledby="pops-h">
+      <h2 id="pops-h">Points of presence</h2>
+      <table id="pops" hidden>
+        <thead><tr><th scope="col">PoP</th><th scope="col">Region</th><th scope="col">Status</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <p id="nopops" class="muted" hidden>No PoP has reported.</p>
+    </section>
+    <section aria-labelledby="inc-h">
+      <h2 id="inc-h">Incidents</h2>
+      <ol id="incidents" class="incidents"></ol>
+      <p id="noinc" class="muted" hidden>No incidents reported.</p>
+    </section>
+  </main>
+  <footer><div class="wrap muted">This page is hosted separately from the platform so it stays up during outages.
+    <span id="portal"></span></div></footer>
+  <script src="config.js"></script>
+  <script src="status.js"></script>
+</body>
+</html>

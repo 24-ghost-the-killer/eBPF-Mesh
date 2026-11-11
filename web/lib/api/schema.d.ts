@@ -411,7 +411,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Public PoP status (no authentication). */
+        /**
+         * Public PoP status (no authentication). Readable cross-origin by the
+         *     configured status page origins (no credentials).
+         */
         get: operations["status"];
         put?: never;
         post?: never;
