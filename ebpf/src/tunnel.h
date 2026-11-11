@@ -196,7 +196,8 @@ __attribute__((noinline)) int xs_mss_clamp(struct xdp_md *ctx, __u32 tcp_off,
 {
 	__u8 hdr[20], opt[8] = {}, val[2];
 	__u16 mss, hc, m, m2;
-	__u32 off = 0;
+	__u32 off = 0, sh;
+	__u64 w;
 	__be16 check;
 
 	if (!ctx || tcp_off > XS_MAX_L4_OFF || mss_max > 0xffff)
@@ -223,15 +224,19 @@ __attribute__((noinline)) int xs_mss_clamp(struct xdp_md *ctx, __u32 tcp_off,
 			}
 		}
 	}
-	/* opt[] is zero beyond the options read, so a short header never
-	 * matches kind 2 / length 4. */
-	switch (off) {
-	case 0: if (opt[0] != 2 || opt[1] != 4) return 0; mss = opt[2] << 8 | opt[3]; break;
-	case 1: if (opt[1] != 2 || opt[2] != 4) return 0; mss = opt[3] << 8 | opt[4]; break;
-	case 2: if (opt[2] != 2 || opt[3] != 4) return 0; mss = opt[4] << 8 | opt[5]; break;
-	case 3: if (opt[3] != 2 || opt[4] != 4) return 0; mss = opt[5] << 8 | opt[6]; break;
-	default: if (opt[4] != 2 || opt[5] != 4) return 0; mss = opt[6] << 8 | opt[7]; break;
-	}
+	/*
+	 * opt[] is zero beyond the options read, so a short header never
+	 * matches kind 2 / length 4. The bytes are picked from one scalar with
+	 * shifts: indexing opt[] with the variable off lets compilers build a
+	 * stack pointer with OR (clang 18 does), which the verifier refuses.
+	 */
+	w = (__u64)opt[0] | (__u64)opt[1] << 8 | (__u64)opt[2] << 16 |
+	    (__u64)opt[3] << 24 | (__u64)opt[4] << 32 | (__u64)opt[5] << 40 |
+	    (__u64)opt[6] << 48 | (__u64)opt[7] << 56;
+	sh = off * 8;
+	if (((w >> sh) & 0xff) != 2 || ((w >> (sh + 8)) & 0xff) != 4)
+		return 0;
+	mss = (__u16)(((w >> (sh + 16)) & 0xff) << 8 | ((w >> (sh + 24)) & 0xff));
 	if (mss <= mss_max)
 		return 0;
 
