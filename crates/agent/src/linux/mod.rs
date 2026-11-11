@@ -3,6 +3,7 @@
 
 mod health;
 mod kv;
+mod probe;
 mod stats;
 mod telemetry;
 
@@ -73,6 +74,7 @@ pub async fn run(cfg: Config, keep_attached: bool) -> Result<()> {
     tasks.spawn(stats::run(sh.clone()));
     tasks.spawn(health::run(sh.clone()));
     tasks.spawn(health::gc(sh.clone()));
+    tasks.spawn(probe::run(sh.clone()));
     {
         let (m, addr) = (sh.metrics.clone(), sh.cfg.agent.metrics_listen);
         tasks.spawn(async move {

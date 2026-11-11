@@ -58,6 +58,10 @@ pub fn subject_health(pop: &str) -> String {
 pub fn subject_ack(pop: &str) -> String {
     format!("config.ack.{pop}")
 }
+/// Request/reply: the API asks one PoP to test an asset's tunnel.
+pub fn subject_probe(pop: &str) -> String {
+    format!("probe.{pop}")
+}
 
 /// Parses a KV value; error text is what the agent puts in its ack.
 pub fn parse_doc<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, String> {
@@ -411,6 +415,31 @@ pub struct ConfigAck {
     pub ts: u64,
 }
 
+/// `probe.<pop>` request: test the tunnel of one asset (ADR 0020). The
+/// agent only probes assets it has applied, so the API cannot make a PoP
+/// send packets to an arbitrary host.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProbeReq {
+    pub v: u32,
+    pub asset: u32,
+    /// Echo requests to send (1..=5).
+    pub count: u8,
+}
+
+/// Reply to a [`ProbeReq`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ProbeResp {
+    pub v: u32,
+    pub pop: String,
+    pub asset: u32,
+    pub sent: u8,
+    pub received: u8,
+    /// Mean round trip of the answered probes.
+    pub rtt_ms: Option<f64>,
+    pub error: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -425,6 +454,17 @@ mod tests {
         }
         assert_eq!(subject_telemetry("cph1", 3), "telemetry.cph1.3");
         assert_eq!(subject_ack("cph1"), "config.ack.cph1");
+        assert_eq!(subject_probe("cph1"), "probe.cph1");
+    }
+
+    #[test]
+    fn probe_req_is_strict() {
+        let r: ProbeReq = serde_json::from_str(r#"{"v":1,"asset":3,"count":3}"#).unwrap();
+        assert_eq!(r.asset, 3);
+        assert!(
+            serde_json::from_str::<ProbeReq>(r#"{"v":1,"asset":3,"count":3,"dst":"1.2.3.4"}"#)
+                .is_err()
+        );
     }
 
     #[test]

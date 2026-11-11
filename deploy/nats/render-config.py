@@ -6,10 +6,11 @@ One account, one user per component, each identified by an nkey and allowed
 to publish/subscribe only to its own subjects:
 
   admin      everything (operators)
-  api        write the KV buckets; read config.ack.>, health.>, stats.>
+  api        write the KV buckets; read config.ack.>, health.>, stats.>;
+             request probe.> (tunnel tests, ADR 0020)
   pop <id>   publish  telemetry.<id>.>, stats.<id>, health.<id>, config.ack.<id>
              read     the KV buckets tenants, services, rules, platform
-             subscribe decision.global
+             subscribe decision.global, probe.<id> (and answer it)
              (writing to KV is NOT allowed)
 
 TLS is mandatory; JetStream stores the KV buckets.
@@ -50,7 +51,7 @@ def kv_read_permissions():
 
 def api_user(nkey):
     """The control-plane API: writes KV, reads what the agents publish."""
-    publish = ["$JS.API.INFO"]
+    publish = ["$JS.API.INFO", "probe.>"]
     for b in KV_BUCKETS:
         publish += [f"$KV.{b}.>", f"$JS.API.STREAM.INFO.KV_{b}", f"$JS.API.STREAM.MSG.GET.KV_{b}"]
     return {
@@ -75,7 +76,9 @@ def pop_user(pop, nkey):
                 ]
                 + kv_read_permissions()
             },
-            "subscribe": {"allow": ["decision.global", "_INBOX.>"]},
+            "subscribe": {"allow": ["decision.global", f"probe.{pop}", "_INBOX.>"]},
+            # Lets the agent answer probe requests (reply subjects only).
+            "allow_responses": {"max": 1, "expires": "10s"},
         },
     }
 
