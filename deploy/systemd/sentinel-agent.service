@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+[Unit]
+Description=Sentinel-Edge PoP agent (XDP, NATS KV, telemetry)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/sentinel-agent run --config /etc/sentinel/agent.toml
+# SIGTERM detaches XDP (the health check then withdraws the anycast routes);
+# use `sentinel-agent run --keep-attached` for upgrades without a gap.
+KillSignal=SIGTERM
+Restart=on-failure
+RestartSec=2
+RuntimeDirectory=sentinel
+LimitMEMLOCK=infinity
+
+[Install]
+WantedBy=multi-user.target

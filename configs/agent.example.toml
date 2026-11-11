@@ -34,3 +34,8 @@ metrics_listen = "127.0.0.1:9466"
 stats_interval_ms = 1000
 health_interval_s = 5
 gc_interval_s = 10
+
+[bird]                            # optional: drain from the admin panel (ADR 0023)
+drain_file = "/etc/bird/drain.conf"   # included by bird.conf
+birdc = "birdc"
+# socket = "/run/bird/bird.ctl"

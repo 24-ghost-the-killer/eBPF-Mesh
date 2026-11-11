@@ -419,6 +419,34 @@ pub struct ConfigAck {
     pub ts: u64,
 }
 
+/// `platform` bucket key of one PoP's settings (ADR 0023).
+pub fn pop_key(pop: &str) -> String {
+    format!("pop.{pop}")
+}
+
+/// `platform/pop.<id>`: per-PoP settings set from the admin panel.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PopDoc {
+    pub v: u32,
+    pub version: u64,
+    /// Announce the anycast prefixes with a longer AS path so traffic
+    /// prefers other PoPs.
+    #[serde(default)]
+    pub drain: bool,
+}
+
+impl PopDoc {
+    pub fn validate(&self, key: &str) -> Result<String, String> {
+        check_v(self.v)?;
+        let pop = key
+            .strip_prefix("pop.")
+            .ok_or_else(|| format!("not a PoP key: {key:?}"))?;
+        validate_pop_id(pop)?;
+        Ok(pop.to_string())
+    }
+}
+
 pub fn subject_attack(tenant: u32) -> String {
     format!("attack.{tenant}")
 }
@@ -505,6 +533,11 @@ mod tests {
         assert_eq!(subject_telemetry("cph1", 3), "telemetry.cph1.3");
         assert_eq!(subject_ack("cph1"), "config.ack.cph1");
         assert_eq!(subject_probe("cph1"), "probe.cph1");
+        assert_eq!(pop_key("cph1"), "pop.cph1");
+        let d: PopDoc = parse_doc(br#"{"v":1,"version":3,"drain":true}"#).unwrap();
+        assert_eq!(d.validate("pop.cph1").unwrap(), "cph1");
+        assert!(d.validate("global").is_err());
+        assert!(d.validate("pop.Bad Id").is_err());
     }
 
     #[test]

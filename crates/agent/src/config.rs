@@ -22,6 +22,33 @@ pub struct Config {
     pub telemetry: TelemetryCfg,
     #[serde(default)]
     pub agent: AgentCfg,
+    /// BIRD integration (draining); without it drain requests are refused.
+    #[serde(default)]
+    pub bird: Option<BirdCfg>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BirdCfg {
+    /// Included by the BIRD config; holds `define DRAIN = 0;` (or 1).
+    pub drain_file: PathBuf,
+    #[serde(default = "d_birdc")]
+    pub birdc: PathBuf,
+    /// BIRD control socket (birdc -s); default: birdc's default.
+    #[serde(default)]
+    pub socket: Option<PathBuf>,
+}
+
+fn d_birdc() -> PathBuf {
+    "birdc".into()
+}
+
+/// Content of the drain include file.
+pub fn drain_conf(drain: bool) -> String {
+    format!(
+        "# Written by sentinel-agent (admin panel drain). Do not edit.\ndefine DRAIN = {};\n",
+        u8::from(drain)
+    )
 }
 
 #[derive(Debug, Deserialize)]
@@ -227,6 +254,12 @@ mod tests {
         assert_eq!(c.pop.id, "lab1");
         assert_eq!(c.telemetry.shards, 16);
         assert_eq!(c.nexthop_mac(), Some([2, 0, 0, 0, 0, 1]));
+        let b = c.bird.as_ref().expect("[bird] in the example");
+        assert_eq!(b.drain_file, PathBuf::from("/etc/bird/drain.conf"));
+        assert_eq!(
+            drain_conf(true),
+            "# Written by sentinel-agent (admin panel drain). Do not edit.\ndefine DRAIN = 1;\n"
+        );
     }
 
     #[test]

@@ -29,8 +29,9 @@ use sentinel_bpf::maps::{self, U8Val};
 use sentinel_bpf::rules::{self, RuleKind};
 use sentinel_common::abi::{Reason, XsAsset, XsRule, XsSvcKey, XS_CFG_F_OBSERVE};
 use sentinel_common::msg::{
-    key_id, parse_doc, subject_ack, AssetDoc, ConfigAck, PlatformDoc, RulesDoc, ServicesDoc,
-    BUCKET_PLATFORM, BUCKET_RULES, BUCKET_SERVICES, BUCKET_TENANTS, PLATFORM_KEY, SCHEMA_V,
+    key_id, parse_doc, pop_key, subject_ack, AssetDoc, ConfigAck, PlatformDoc, PopDoc, RulesDoc,
+    ServicesDoc, BUCKET_PLATFORM, BUCKET_RULES, BUCKET_SERVICES, BUCKET_TENANTS, PLATFORM_KEY,
+    SCHEMA_V,
 };
 use sentinel_common::prefix::Prefix;
 use sentinel_common::telemetry::diff;
@@ -372,12 +373,32 @@ fn reconcile_rules(sh: &Shared, snap: &Snapshot) -> Result<Vec<KeyResult>> {
 
 fn reconcile_platform(sh: &Shared, snap: &Snapshot) -> Result<Vec<KeyResult>> {
     let mut observe = false;
+    let mut drain = false;
+    let own = pop_key(sh.pop());
     let mut results = Vec::new();
     for (key, v) in snap {
         let Some(bytes) = &v.value else {
             results.push(deleted(key, v));
             continue;
         };
+        if key.starts_with("pop.") {
+            // Per-PoP settings: only our own key changes anything here.
+            let outcome = parse_doc::<PopDoc>(bytes).and_then(|d| {
+                d.validate(key)?;
+                if *key == own {
+                    if sh.cfg.bird.is_none() {
+                        return Err("draining needs [bird] in the agent config".into());
+                    }
+                    drain = d.drain;
+                }
+                Ok(d.version)
+            });
+            if outcome.is_err() && *key == own {
+                drain = super::bird::current_drain(sh).unwrap_or(false);
+            }
+            results.push(result(key, v, outcome));
+            continue;
+        }
         let outcome = parse_doc::<PlatformDoc>(bytes).and_then(|d| {
             d.validate(key)?;
             observe = d.observe;
@@ -390,6 +411,15 @@ fn reconcile_platform(sh: &Shared, snap: &Snapshot) -> Result<Vec<KeyResult>> {
                 .unwrap_or(false);
         }
         results.push(result(key, v, outcome));
+    }
+    if sh.cfg.bird.is_some() {
+        if let Err(e) = super::bird::set_drain(sh, drain) {
+            // Report it on our key's ack (or log when there is none).
+            match results.iter_mut().find(|r| r.key == own) {
+                Some(r) => r.error = Some(format!("{e:#}")),
+                None => warn!("drain: {e:#}"),
+            }
+        }
     }
     sh.update_cfg(|c| {
         let before = c.flags & XS_CFG_F_OBSERVE != 0;

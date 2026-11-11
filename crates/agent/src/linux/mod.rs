@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The agent proper (Linux): attach, connect, run the tasks, shut down.
 
+mod bird;
 mod decisions;
 mod health;
 mod kv;
