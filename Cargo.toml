@@ -18,7 +18,16 @@ rust-version = "1.94"
 publish = false
 
 [workspace.dependencies]
+aes-gcm = "0.11"
 anyhow = "1"
+argon2 = "0.6"
+base64 = "0.23"
+getrandom = "0.3"
+reqwest = { version = "0.13", default-features = false, features = ["json"] }
+sha2 = "0.11"
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls-ring-webpki", "migrate", "macros", "derive", "json"] }
+totp-rs = { version = "6", features = ["otpauth"] }
+utoipa = "6"
 async-nats = "0.52"
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 futures = "0.3"
