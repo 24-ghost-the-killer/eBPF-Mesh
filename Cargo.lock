@@ -259,7 +259,18 @@ dependencies = [
  "libbpf-sys",
  "libc",
  "sentinel-common",
+ "serde",
  "serde_json",
+]
+
+[[package]]
+name = "sentinel-gen"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "libc",
+ "sentinel-common",
 ]
 
 [[package]]
