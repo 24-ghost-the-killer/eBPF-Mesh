@@ -67,9 +67,11 @@ inc() { ip netns exec "$NS_C" "$@"; }
 ctl() { nsenter --net="/run/netns/$NS_B" "$CTL" "$@"; }
 gen() { ina "$GEN" "$@"; }
 
+BG_PIDS=()
 lab_down() {
 	set +e
 	[ -n "${HTTP_PID:-}" ] && kill "$HTTP_PID" 2>/dev/null
+	for pid in "${BG_PIDS[@]}"; do kill "$pid" 2>/dev/null; done
 	ctl detach --iface "$VB" >/dev/null 2>&1
 	for ns in "$NS_A" "$NS_B" "$NS_C"; do ip netns del "$ns" 2>/dev/null; done
 	rm -rf "$SENTINEL_PIN_DIR" "$WORK" 2>/dev/null
@@ -87,7 +89,8 @@ origin_tunnel() {
 	inc sh "$WORK/tunnel-$1.sh" "${2:-up}" >/dev/null
 }
 
-lab_up() { # lab_up [tunnel|dsr]
+# Namespaces, veths, addresses, routes. No XDP program on the PoP yet.
+lab_net() {
 	trap lab_down EXIT
 	mountpoint -q /sys/fs/bpf || mount -t bpf bpf /sys/fs/bpf
 	for ns in "$NS_A" "$NS_B" "$NS_C"; do
@@ -116,13 +119,20 @@ lab_up() { # lab_up [tunnel|dsr]
 	ip -n "$NS_C" addr add "$ORIGIN/24" dev "$VO"
 	ip -n "$NS_C" route add default via 192.0.2.1
 	ip -n "$NS_A" link set dev "$VA" xdpdrv obj "$PASS_OBJ" sec xdp
+}
 
+# PoP configured by hand with sentinelctl: attach, config, asset 1.
+pop_ctl_setup() {
 	ctl attach --iface "$VB" --obj "$BPF_OBJ" --pop-ip4 "$POP_IP" >/dev/null
 	ctl config set --tunnel-ep4 "$TUNNEL_EP" --nexthop-mac "$MAC_A" >/dev/null
 	ctl asset add "$PROTECTED/32" --tenant 1 --origin "$ORIGIN" >/dev/null
+}
 
+# Customer side: the tunnel script for asset 1 and the HTTP origin.
+origin_start() { # origin_start [tunnel|dsr]
 	origin_tunnel "${1:-tunnel}"
-	inc python3 "$HERE/http_origin.py" "$PROTECTED" 80 >"$WORK/http.log" 2>&1 &
+	# Started directly (not via a shell function) so $! is the server itself.
+	ip netns exec "$NS_C" python3 "$HERE/http_origin.py" "$PROTECTED" 80 >"$WORK/http.log" 2>&1 &
 	HTTP_PID=$!
 	for _ in $(seq 50); do
 		inc ss -Hltn "sport = :80" | grep -q . && return 0
@@ -130,6 +140,22 @@ lab_up() { # lab_up [tunnel|dsr]
 	done
 	echo "HTTP origin did not start" >&2
 	exit 1
+}
+
+lab_up() { # lab_up [tunnel|dsr]
+	lab_net
+	pop_ctl_setup
+	origin_start "${1:-tunnel}"
+}
+
+# wait_for <file> <grep -E pattern> [seconds]: true once the file matches.
+wait_for() {
+	local i
+	for i in $(seq $((${3:-5} * 10))); do
+		grep -qE "$2" "$1" 2>/dev/null && return 0
+		sleep 0.1
+	done
+	return 1
 }
 
 # Packets counted for a verdict (all tenants).

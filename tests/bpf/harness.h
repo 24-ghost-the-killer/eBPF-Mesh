@@ -12,7 +12,7 @@
 
 struct xs_fds {
 	int prog, cfg, stats, tenants, tenants6;
-	int allow, allow6, block, block6, services, rl, verified;
+	int allow, allow6, block, block6, services, rl, verified, events, counters;
 };
 
 /*
@@ -89,5 +89,6 @@ int check(const char *name, int ok, const char *why);
 
 void run_policy_tests(void);
 void run_tunnel_tests(void);
+void run_sample_tests(void);
 
 #endif /* XS_HARNESS_H */

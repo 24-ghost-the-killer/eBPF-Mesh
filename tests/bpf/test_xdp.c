@@ -32,6 +32,8 @@ static const char *verdict_names[XS_V__COUNT] = {
 	"drop_unverified", "drop_no_tenant", "drop_too_big", "drop_tunnel",
 	"tx_return", "drop_return",
 };
+_Static_assert(sizeof(verdict_names) / sizeof(verdict_names[0]) == XS_V__COUNT,
+	       "verdict names out of date");
 
 static const char *verdict_name(int v)
 {
@@ -486,6 +488,8 @@ int main(int argc, char **argv)
 	fd.services = map_fd(obj, "xs_services");
 	fd.rl = map_fd(obj, "xs_rl");
 	fd.verified = map_fd(obj, "xs_verified");
+	fd.events = map_fd(obj, "xs_events");
+	fd.counters = map_fd(obj, "xs_counters");
 	ncpu = libbpf_num_possible_cpus();
 	if (ncpu <= 0) {
 		fprintf(stderr, "libbpf_num_possible_cpus failed\n");
@@ -495,6 +499,7 @@ int main(int argc, char **argv)
 	parser_suite();
 	run_policy_tests();
 	run_tunnel_tests();
+	run_sample_tests();
 
 	printf("%d/%d passed\n", runs - failures, runs);
 	bpf_object__close(obj);
