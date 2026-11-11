@@ -31,7 +31,13 @@ echo "HTTP_PORT=18080" >>"$S/.env"
 [ "$(stat -c %a "$S" 2>/dev/null || stat -f %Lp "$S")" = 700 ] && pass "state directory is private (700)" || fail "state permissions"
 "$C/scripts/init.sh" >/dev/null 2>&1 && fail "init.sh overwrote existing secrets" || pass "init.sh refuses to overwrite secrets"
 
-dc up -d --build >/dev/null 2>&1 || { fail "compose up"; dc logs --tail 20; exit 1; }
+if ! dc up -d --build >"$S/up.log" 2>&1; then
+	fail "compose up"
+	tail -40 "$S/up.log"
+	dc ps -a 2>/dev/null
+	df -h / 2>/dev/null | tail -1
+	exit 1
+fi
 wait_until 240 curl -skf "$B/api/v1/status" && pass "API answers through Caddy (TLS)" || { fail "API via Caddy"; dc logs --tail 30 api caddy bootstrap; }
 [ "$(dc ps -a --format '{{.Service}} {{.ExitCode}}' | awk '$1 == "bootstrap" { print $2 }')" = 0 ] &&
 	pass "bootstrap: migrations and worker keys" || fail "bootstrap"

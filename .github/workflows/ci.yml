@@ -70,6 +70,13 @@ jobs:
           make deploy-artifacts
           make deploy-test
 
+      - name: Free disk space for the image builds
+        run: |
+          df -h /
+          rm -rf target build/e2e-artifacts
+          docker system prune -af >/dev/null
+          df -h /
+
       - name: Deployment - control-plane stack from scratch (docker compose)
         run: make deploy-smoke
 
