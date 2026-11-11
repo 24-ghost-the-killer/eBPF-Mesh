@@ -19,9 +19,7 @@ serde_json.workspace = true
 sentinel-common.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
-libbpf-rs.workspace = true
-libbpf-sys.workspace = true
-libc.workspace = true
+sentinel-bpf.workspace = true
 
 [lints]
 workspace = true

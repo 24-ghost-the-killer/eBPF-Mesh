@@ -386,19 +386,7 @@ fn parse_rule_prefix(s: &str) -> Result<Prefix, String> {
 }
 
 fn parse_mac(s: &str) -> Result<[u8; 6], String> {
-    let parts: Vec<_> = s.split(':').collect();
-    let err = || format!("invalid MAC {s:?} (expected aa:bb:cc:dd:ee:ff)");
-    if parts.len() != 6 {
-        return Err(err());
-    }
-    let mut mac = [0u8; 6];
-    for (b, p) in mac.iter_mut().zip(parts) {
-        if p.len() != 2 {
-            return Err(err());
-        }
-        *b = u8::from_str_radix(p, 16).map_err(|_| err())?;
-    }
-    Ok(mac)
+    sentinel_common::units::parse_mac(s)
 }
 
 /// An origin must be a routable unicast address outside the protected prefix.

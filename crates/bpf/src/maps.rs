@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Typed access to the pinned maps.
 
+use std::ffi::CString;
 use std::fs::File;
 use std::io::Read;
 
@@ -10,8 +11,6 @@ use libbpf_rs::{ErrorKind, MapCore, MapFlags, MapHandle};
 use sentinel_common::abi::{MapBytes, XsAsset, XsCfg, XsTenant6Key, XsTenantKey};
 use sentinel_common::pin::PinLayout;
 use sentinel_common::prefix::Prefix;
-
-use crate::AssetRef;
 
 pub fn open(pins: &PinLayout, name: &str) -> Result<MapHandle> {
     let path = pins.map(name);
@@ -73,7 +72,7 @@ fn name(m: &MapHandle) -> String {
     m.name().to_string_lossy().into_owned()
 }
 
-const ZERO: U32Key = U32Key(0);
+pub const ZERO: U32Key = U32Key(0);
 
 /// Key of the single-entry ARRAY maps.
 #[derive(Clone, Copy)]
@@ -138,19 +137,6 @@ pub fn assets(pins: &PinLayout) -> Result<Vec<(Prefix, XsAsset)>> {
     }
     out.sort_by_key(|(_, a)| a.asset);
     Ok(out)
-}
-
-pub fn resolve_asset(pins: &PinLayout, r: &AssetRef) -> Result<(Prefix, XsAsset)> {
-    assets(pins)?
-        .into_iter()
-        .find(|(p, a)| match r {
-            AssetRef::Id(id) => a.asset == *id,
-            AssetRef::Prefix(q) => p == q,
-        })
-        .ok_or_else(|| match r {
-            AssetRef::Id(id) => anyhow!("no asset with id {id}"),
-            AssetRef::Prefix(q) => anyhow!("no asset for {q} (prefixes must match exactly)"),
-        })
 }
 
 pub fn put_asset(pins: &PinLayout, p: &Prefix, a: &XsAsset) -> Result<()> {
@@ -220,4 +206,30 @@ pub fn random_key() -> Result<[u64; 2]> {
         bail!("/dev/urandom returned zeros");
     }
     Ok(k)
+}
+
+/// Interface index in the current network namespace.
+pub fn ifindex(iface: &str) -> Result<u32> {
+    let c = CString::new(iface)?;
+    // SAFETY: c is a valid NUL-terminated string.
+    let idx = unsafe { libc::if_nametoindex(c.as_ptr()) };
+    if idx == 0 {
+        bail!(
+            "no such interface: {iface} ({})",
+            std::io::Error::last_os_error()
+        );
+    }
+    Ok(idx)
+}
+
+/// Sum over CPUs of entry `idx` of the xs_counters PERCPU_ARRAY.
+pub fn counter_sum(pins: &PinLayout, idx: u32) -> Result<u64> {
+    let m = open(pins, "xs_counters")?;
+    let per_cpu = m
+        .lookup_percpu(&idx.to_ne_bytes(), MapFlags::ANY)?
+        .unwrap_or_default();
+    Ok(per_cpu
+        .iter()
+        .filter_map(|b| b.as_slice().try_into().ok().map(u64::from_ne_bytes))
+        .sum())
 }

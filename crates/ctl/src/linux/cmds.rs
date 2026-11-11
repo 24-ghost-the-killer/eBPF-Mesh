@@ -5,59 +5,101 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Result};
-use libbpf_rs::{MapCore, MapFlags};
 use serde::Serialize;
 
 use sentinel_common::abi::{
-    reason_name, MapBytes, XsAddrKey, XsAsset, XsPolicy, XsRule, XsSrc6Key, XsSrcKey, XsStatsKey,
-    XsStatsVal, XsSvcKey, XS_CFG_F_OBSERVE, XS_P_ALLOW_FRAG, XS_P_MITIGATE, XS_P_SERVICES,
-    XS_P_SYNCOOKIE,
+    reason_name, XsAsset, XsPolicy, XsRule, XsSvcKey, XS_CFG_F_OBSERVE, XS_P_ALLOW_FRAG,
+    XS_P_MITIGATE, XS_P_SERVICES, XS_P_SYNCOOKIE,
 };
 use sentinel_common::pin::PinLayout;
 use sentinel_common::prefix::Prefix;
-use sentinel_common::stats::Snapshot;
 use sentinel_common::tunnel::TunnelScript;
 use sentinel_common::units::{expires_at, format_remaining, proto_name};
 
-use super::maps::{self, U64Val, U8Val};
-use crate::{AssetCmd, ConfigCmd, PolicyCmd, RuleAdd, RuleCmd, ServiceCmd};
+use sentinel_bpf::attach::{self, AttachOpts, XdpMode};
+use sentinel_bpf::maps::{self, U8Val};
+use sentinel_bpf::rules::{self, RuleKind};
+use sentinel_bpf::stats;
+
+use crate::{
+    AssetCmd, AssetRef, AttachArgs, ConfigCmd, Mode, PolicyCmd, RuleAdd, RuleCmd, ServiceCmd,
+};
 
 fn print_json<T: Serialize>(v: &T) -> Result<()> {
     println!("{}", serde_json::to_string(v)?);
     Ok(())
 }
 
-// ---- stats / observe --------------------------------------------------------
+// ---- attach / detach --------------------------------------------------------------
 
-pub fn read_stats(pins: &PinLayout) -> Result<Snapshot> {
-    let map = maps::open(pins, "xs_stats")?;
-    let mut rows = Vec::new();
-    for key in map.keys() {
-        let k = XsStatsKey::from_bytes(&key).ok_or_else(|| {
-            anyhow!(
-                "xs_stats key has unexpected size {} (ABI mismatch)",
-                key.len()
-            )
-        })?;
-        // An entry can vanish between keys() and lookup; skip it.
-        let Some(per_cpu) = map.lookup_percpu(&key, MapFlags::ANY)? else {
-            continue;
-        };
-        let vals = per_cpu
-            .iter()
-            .map(|b| {
-                XsStatsVal::from_bytes(b)
-                    .ok_or_else(|| anyhow!("xs_stats value has unexpected size {}", b.len()))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        rows.push((k, vals));
+pub fn attach(pins: &PinLayout, a: &AttachArgs) -> Result<()> {
+    let mode = match a.mode {
+        Mode::Native => XdpMode::Native,
+        Mode::Generic => XdpMode::Generic,
+    };
+    let done = attach::attach(
+        pins,
+        &AttachOpts {
+            iface: &a.iface,
+            obj: &a.obj,
+            mode,
+            pop_ip4: a.pop_ip4,
+            pop_ip6: a.pop_ip6,
+        },
+    )?;
+    for w in &done.warnings {
+        eprintln!("sentinelctl: warning: {w}");
     }
-    Ok(Snapshot::from_percpu(rows))
+    println!(
+        "attached {} to {} (ifindex {}, {} mode, mtu {}); pins in {}",
+        attach::PROG_NAME,
+        a.iface,
+        done.ifindex,
+        if mode == XdpMode::Native {
+            "native"
+        } else {
+            "generic"
+        },
+        done.mtu,
+        pins.root().display()
+    );
+    Ok(())
 }
+
+pub fn detach(pins: &PinLayout, iface: &str) -> Result<()> {
+    let done = attach::detach(pins, iface)?;
+    for w in &done.warnings {
+        eprintln!("sentinelctl: warning: {w}");
+    }
+    println!(
+        "detached from {iface}{}",
+        if done.maps_removed {
+            "; removed pinned maps"
+        } else {
+            ""
+        }
+    );
+    Ok(())
+}
+
+fn resolve_asset(pins: &PinLayout, r: &AssetRef) -> Result<(Prefix, XsAsset)> {
+    maps::assets(pins)?
+        .into_iter()
+        .find(|(p, a)| match r {
+            AssetRef::Id(id) => a.asset == *id,
+            AssetRef::Prefix(q) => p == q,
+        })
+        .ok_or_else(|| match r {
+            AssetRef::Id(id) => anyhow!("no asset with id {id}"),
+            AssetRef::Prefix(q) => anyhow!("no asset for {q} (prefixes must match exactly)"),
+        })
+}
+
+// ---- stats / observe --------------------------------------------------------
 
 pub fn stats(pins: &PinLayout, json: bool, watch: bool, interval: u64) -> Result<()> {
     loop {
-        let snap = read_stats(pins)?;
+        let snap = stats::read(pins)?;
         if json {
             print_json(&snap)?;
         } else {
@@ -247,7 +289,7 @@ pub fn asset(pins: &PinLayout, cmd: AssetCmd, json: bool) -> Result<()> {
             );
         }
         AssetCmd::Del { asset } => {
-            let (p, a) = maps::resolve_asset(pins, &asset)?;
+            let (p, a) = resolve_asset(pins, &asset)?;
             maps::del_asset(pins, &p)?;
             let svc = maps::open(pins, "xs_services")?;
             let mut n = 0;
@@ -291,7 +333,7 @@ pub fn asset(pins: &PinLayout, cmd: AssetCmd, json: bool) -> Result<()> {
             }
         }
         AssetCmd::Script(sc) => {
-            let (p, a) = maps::resolve_asset(pins, &sc.asset)?;
+            let (p, a) = resolve_asset(pins, &sc.asset)?;
             let cfg = maps::read_cfg(pins)?;
             let script = TunnelScript {
                 asset_id: a.asset,
@@ -343,9 +385,7 @@ fn policy_view(p: &XsPolicy) -> PolicyView {
 
 pub fn policy(pins: &PinLayout, cmd: PolicyCmd, json: bool) -> Result<()> {
     let (prefix, mut a) = match &cmd {
-        PolicyCmd::Show { asset } | PolicyCmd::Set { asset, .. } => {
-            maps::resolve_asset(pins, asset)?
-        }
+        PolicyCmd::Show { asset } | PolicyCmd::Set { asset, .. } => resolve_asset(pins, asset)?,
     };
     if let PolicyCmd::Set { change, .. } = cmd {
         a.policy = change.apply(a.policy);
@@ -385,12 +425,12 @@ pub fn service(pins: &PinLayout, cmd: ServiceCmd, json: bool) -> Result<()> {
     let map = maps::open(pins, "xs_services")?;
     match cmd {
         ServiceCmd::Add(s) => {
-            let (_, a) = maps::resolve_asset(pins, &s.asset)?;
+            let (_, a) = resolve_asset(pins, &s.asset)?;
             maps::put(&map, &s.key(a.asset), &U8Val(1))?;
             println!("service added to asset {}", a.asset);
         }
         ServiceCmd::Del(s) => {
-            let (_, a) = maps::resolve_asset(pins, &s.asset)?;
+            let (_, a) = resolve_asset(pins, &s.asset)?;
             if !maps::del(&map, &s.key(a.asset))? {
                 bail!("no such service on asset {}", a.asset);
             }
@@ -398,7 +438,7 @@ pub fn service(pins: &PinLayout, cmd: ServiceCmd, json: bool) -> Result<()> {
         }
         ServiceCmd::List { asset } => {
             let only = match asset {
-                Some(r) => Some(maps::resolve_asset(pins, &r)?.1.asset),
+                Some(r) => Some(resolve_asset(pins, &r)?.1.asset),
                 None => None,
             };
             let mut list: Vec<XsSvcKey> = maps::entries::<XsSvcKey, U8Val>(&map)?
@@ -434,35 +474,6 @@ pub fn service(pins: &PinLayout, cmd: ServiceCmd, json: bool) -> Result<()> {
 
 // ---- allow / block ------------------------------------------------------------
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum RuleKind {
-    Allow,
-    Block,
-}
-
-impl RuleKind {
-    fn maps(self) -> (&'static str, &'static str) {
-        match self {
-            RuleKind::Allow => ("xs_allow", "xs_allow6"),
-            RuleKind::Block => ("xs_block", "xs_block6"),
-        }
-    }
-    fn name(self) -> &'static str {
-        match self {
-            RuleKind::Allow => "allow",
-            RuleKind::Block => "block",
-        }
-    }
-    /// Mirrors xs_rule_active() in policy.h.
-    fn active(self, r: &XsRule, now: u64) -> bool {
-        match (self, r.expires_ns) {
-            (RuleKind::Allow, 0) => true,
-            (RuleKind::Block, 0) => false,
-            (_, e) => e > now,
-        }
-    }
-}
-
 #[derive(Serialize)]
 struct RuleView {
     tenant: u32,
@@ -471,52 +482,6 @@ struct RuleView {
     expires_ns: u64,
     expires_in: String,
     reason: String,
-}
-
-/// All rules of one kind, v4 then v6.
-fn list_rules(pins: &PinLayout, kind: RuleKind) -> Result<Vec<(u32, Prefix, XsRule)>> {
-    let (m4, m6) = kind.maps();
-    let mut out = Vec::new();
-    for (k, r) in maps::entries::<XsSrcKey, XsRule>(&maps::open(pins, m4)?)? {
-        if let Some((t, p)) = Prefix::from_key4(&k) {
-            out.push((t, p, r));
-        }
-    }
-    for (k, r) in maps::entries::<XsSrc6Key, XsRule>(&maps::open(pins, m6)?)? {
-        if let Some((t, p)) = Prefix::from_key6(&k) {
-            out.push((t, p, r));
-        }
-    }
-    out.sort_by_key(|(t, p, _)| (*t, !p.is_v4(), p.to_string()));
-    Ok(out)
-}
-
-/// Writes or deletes the LPM entry for (tenant, prefix).
-fn rule_entry(
-    pins: &PinLayout,
-    kind: RuleKind,
-    tenant: u32,
-    p: &Prefix,
-    rule: Option<XsRule>,
-) -> Result<bool> {
-    let (m4, m6) = kind.maps();
-    match (p.key4(tenant), p.key6(tenant)) {
-        (Some(k), _) => {
-            let m = maps::open(pins, m4)?;
-            match rule {
-                Some(r) => maps::put(&m, &k, &r).map(|_| true),
-                None => maps::del(&m, &k),
-            }
-        }
-        (None, Some(k)) => {
-            let m = maps::open(pins, m6)?;
-            match rule {
-                Some(r) => maps::put(&m, &k, &r).map(|_| true),
-                None => maps::del(&m, &k),
-            }
-        }
-        (None, None) => unreachable!("a prefix is v4 or v6"),
-    }
 }
 
 pub fn rules(pins: &PinLayout, kind: RuleKind, cmd: RuleCmd, json: bool) -> Result<()> {
@@ -537,7 +502,7 @@ pub fn rules(pins: &PinLayout, kind: RuleKind, cmd: RuleCmd, json: bool) -> Resu
                 reason: reason as u32,
                 _pad: 0,
             };
-            rule_entry(pins, kind, tenant, &prefix, Some(rule))?;
+            rules::set(pins, kind, tenant, &prefix, Some(rule))?;
             println!(
                 "{} {prefix} (tenant {tenant}) {}",
                 kind.name(),
@@ -548,14 +513,14 @@ pub fn rules(pins: &PinLayout, kind: RuleKind, cmd: RuleCmd, json: bool) -> Resu
             );
         }
         RuleCmd::Del { prefix, tenant } => {
-            if !rule_entry(pins, kind, tenant, &prefix, None)? {
+            if !rules::set(pins, kind, tenant, &prefix, None)? {
                 bail!("no {} rule for {prefix} (tenant {tenant})", kind.name());
             }
             println!("removed {} {prefix} (tenant {tenant})", kind.name());
         }
         RuleCmd::List => {
             let now = maps::boot_ns();
-            let views: Vec<_> = list_rules(pins, kind)?
+            let views: Vec<_> = rules::list(pins, kind)?
                 .into_iter()
                 .map(|(tenant, p, r)| RuleView {
                     tenant,
@@ -594,40 +559,25 @@ pub fn rotate(pins: &PinLayout) -> Result<()> {
     Ok(())
 }
 
-#[derive(Serialize, Default)]
-struct GcReport {
+#[derive(Serialize)]
+struct GcView {
     allow: usize,
     block: usize,
     verified: usize,
 }
 
 pub fn gc(pins: &PinLayout, json: bool) -> Result<()> {
-    let now = maps::boot_ns();
-    let mut report = GcReport::default();
-    for kind in [RuleKind::Allow, RuleKind::Block] {
-        let mut n = 0;
-        for (tenant, p, r) in list_rules(pins, kind)? {
-            if !kind.active(&r, now) && rule_entry(pins, kind, tenant, &p, None)? {
-                n += 1;
-            }
-        }
-        match kind {
-            RuleKind::Allow => report.allow = n,
-            RuleKind::Block => report.block = n,
-        }
-    }
-    let verified = maps::open(pins, "xs_verified")?;
-    for (k, exp) in maps::entries::<XsAddrKey, U64Val>(&verified)? {
-        if exp.0 <= now && maps::del(&verified, &k)? {
-            report.verified += 1;
-        }
-    }
+    let r = rules::gc(pins)?;
     if json {
-        return print_json(&report);
+        return print_json(&GcView {
+            allow: r.allow,
+            block: r.block,
+            verified: r.verified,
+        });
     }
     println!(
         "removed {} expired allow, {} expired block, {} expired verified entries",
-        report.allow, report.block, report.verified
+        r.allow, r.block, r.verified
     );
     Ok(())
 }
