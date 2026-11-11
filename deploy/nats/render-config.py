@@ -6,18 +6,22 @@ One account, one user per component, each identified by an nkey and allowed
 to publish/subscribe only to its own subjects:
 
   admin      everything (operators)
-  api        write the KV buckets; read config.ack.>, health.>, stats.>;
-             request probe.> (tunnel tests, ADR 0020)
+  api        write the KV buckets; read config.ack.>, health.>, stats.>,
+             attack.>, decision.global; request probe.> (ADR 0020); publish
+             decision.global (admin decisions, ADR 0021)
   pop <id>   publish  telemetry.<id>.>, stats.<id>, health.<id>, config.ack.<id>
-             read     the KV buckets tenants, services, rules, platform
+             read     the KV buckets tenants, services, rules, platform, keys
              subscribe decision.global, probe.<id> (and answer it)
              (writing to KV is NOT allowed)
+  worker <id> subscribe telemetry.>, stats.>; read KV rules (allowlists);
+             publish attack.>, decision.global
 
 TLS is mandatory; JetStream stores the KV buckets.
 
 Usage:
   render-config.py --listen 127.0.0.1:4222 --cert server.pem --key server.key \\
       --store /var/lib/nats --admin UADMIN... [--api UAPI...] --pop lab1=UPOP1... [--pop ...]
+      [--worker worker-1=UWORKER...]
 The output is JSON, which nats-server accepts as configuration.
 """
 import argparse
@@ -25,15 +29,15 @@ import json
 import re
 import sys
 
-KV_BUCKETS = ["tenants", "services", "rules", "platform"]
+KV_BUCKETS = ["tenants", "services", "rules", "platform", "keys"]
 POP_ID = re.compile(r"^[a-z0-9-]{1,32}$")
 NKEY = re.compile(r"^U[A-Z2-7]{55}$")
 
 
-def kv_read_permissions():
+def kv_read_permissions(buckets=KV_BUCKETS):
     """JetStream API subjects needed to read (get, watch, list) KV buckets."""
     subjects = ["$JS.API.INFO"]
-    for b in KV_BUCKETS:
+    for b in buckets:
         s = f"KV_{b}"
         subjects += [
             f"$JS.API.STREAM.INFO.{s}",
@@ -51,14 +55,15 @@ def kv_read_permissions():
 
 def api_user(nkey):
     """The control-plane API: writes KV, reads what the agents publish."""
-    publish = ["$JS.API.INFO", "probe.>"]
+    publish = ["$JS.API.INFO", "probe.>", "decision.global"]
     for b in KV_BUCKETS:
         publish += [f"$KV.{b}.>", f"$JS.API.STREAM.INFO.KV_{b}", f"$JS.API.STREAM.MSG.GET.KV_{b}"]
     return {
         "nkey": nkey,
         "permissions": {
             "publish": {"allow": publish},
-            "subscribe": {"allow": ["config.ack.>", "health.>", "stats.>", "_INBOX.>"]},
+            "subscribe": {"allow": ["config.ack.>", "health.>", "stats.>", "attack.>",
+                                    "decision.global", "_INBOX.>"]},
         },
     }
 
@@ -83,6 +88,19 @@ def pop_user(pop, nkey):
     }
 
 
+def worker_user(worker, nkey):
+    """An analysis worker: reads telemetry, stats and allowlists; publishes
+    attacks and signed decisions (ADR 0021)."""
+    return {
+        "nkey": nkey,
+        "permissions": {
+            "publish": {"allow": ["attack.>", "decision.global"]
+                        + kv_read_permissions(["rules"])},
+            "subscribe": {"allow": ["telemetry.>", "stats.>", "_INBOX.>"]},
+        },
+    }
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -93,6 +111,7 @@ def main():
     p.add_argument("--admin", required=True, help="admin user's public nkey")
     p.add_argument("--api", help="the API's public nkey")
     p.add_argument("--pop", action="append", default=[], metavar="ID=NKEY")
+    p.add_argument("--worker", action="append", default=[], metavar="ID=NKEY")
     a = p.parse_args()
 
     users = []
@@ -109,6 +128,11 @@ def main():
         if not POP_ID.match(pop) or not NKEY.match(nk):
             sys.exit(f"render-config: bad --pop {spec!r} (id=UNKEY...)")
         users.append(pop_user(pop, nk))
+    for spec in a.worker:
+        w, _, nk = spec.partition("=")
+        if not POP_ID.match(w) or not NKEY.match(nk):
+            sys.exit(f"render-config: bad --worker {spec!r} (id=UNKEY...)")
+        users.append(worker_user(w, nk))
 
     conf = {
         "listen": a.listen,

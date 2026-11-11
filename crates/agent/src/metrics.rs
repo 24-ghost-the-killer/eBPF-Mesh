@@ -22,6 +22,12 @@ pub struct BucketLabels {
     pub bucket: String,
 }
 
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub struct DecisionLabels {
+    /// applied, extended, skipped_allowlisted, skipped_manual, or a reject label.
+    pub result: String,
+}
+
 pub struct Metrics {
     registry: Registry,
     pub packets: Family<VerdictLabels, Counter>,
@@ -34,6 +40,7 @@ pub struct Metrics {
     pub xdp_attached: Gauge,
     pub kv_applied: Family<BucketLabels, Counter>,
     pub kv_rejected: Family<BucketLabels, Counter>,
+    pub decisions: Family<DecisionLabels, Counter>,
     /// Last cumulative kernel values, to turn them into counter increments.
     last: Mutex<HashMap<(u32, String), (u64, u64)>>,
     last_lost: Mutex<u64>,
@@ -53,6 +60,7 @@ impl Default for Metrics {
             xdp_attached: Gauge::default(),
             kv_applied: Family::default(),
             kv_rejected: Family::default(),
+            decisions: Family::default(),
             last: Mutex::new(HashMap::new()),
             last_lost: Mutex::new(0),
             registry: Registry::default(),
@@ -95,6 +103,11 @@ impl Default for Metrics {
         );
         registry.register("kv_applied", "KV changes applied", m.kv_applied.clone());
         registry.register("kv_rejected", "KV changes rejected", m.kv_rejected.clone());
+        registry.register(
+            "decisions",
+            "Signed decisions received, by outcome",
+            m.decisions.clone(),
+        );
         Metrics { registry, ..m }
     }
 }
@@ -126,6 +139,14 @@ impl Metrics {
         let d = cumulative.checked_sub(*last).unwrap_or(cumulative);
         *last = cumulative;
         self.events_lost.inc_by(d);
+    }
+
+    pub fn decision(&self, result: &str) {
+        self.decisions
+            .get_or_create(&DecisionLabels {
+                result: result.to_string(),
+            })
+            .inc();
     }
 
     pub fn bucket(&self, bucket: &str, ok: bool) {

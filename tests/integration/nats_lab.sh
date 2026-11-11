@@ -29,14 +29,16 @@ nats_prepare() {
 	printf 'subjectAltName=IP:127.0.0.1,DNS:localhost\n' >"$N/san.ext"
 	openssl x509 -req -in "$N/server.csr" -CA "$N/ca.pem" -CAkey "$N/ca.key" -CAcreateserial \
 		-days 2 -extfile "$N/san.ext" -out "$N/server.pem" 2>/dev/null
-	local admin_pub api_pub pop_pub lab2_pub
+	local admin_pub api_pub pop_pub lab2_pub worker_pub
 	admin_pub=$("$AGENT" nkey generate --out "$N/admin.nk")
+	worker_pub=$("$AGENT" nkey generate --out "$N/worker-1.nk")
 	api_pub=$("$AGENT" nkey generate --out "$N/api.nk")
 	pop_pub=$("$AGENT" nkey generate --out "$N/lab1.nk")
 	lab2_pub=$("$AGENT" nkey generate --out "$N/lab2.nk")
 	python3 "$RENDER" --listen 127.0.0.1:4222 --cert "$N/server.pem" --key "$N/server.key" \
 		--store "$N/js" --admin "$admin_pub" --api "$api_pub" \
-		--pop "lab1=$pop_pub" --pop "lab2=$lab2_pub" >"$N/server.json"
+		--pop "lab1=$pop_pub" --pop "lab2=$lab2_pub" --worker "worker-1=$worker_pub" \
+		>"$N/server.json"
 }
 
 # Server in ns B plus the four KV buckets. Call after lab_net.
@@ -46,7 +48,7 @@ nats_start() {
 	ip netns exec "$NS_B" nats-server -c "$N/server.json" >"$N/server.log" 2>&1 &
 	BG_PIDS+=($!)
 	for _ in $(seq 50); do inb ss -Hltn "sport = :4222" | grep -q . && break; sleep 0.1; done
-	for b in tenants services rules platform; do
+	for b in tenants services rules platform keys; do
 		admin kv add "$b" --history 5 >/dev/null
 	done
 }
@@ -98,4 +100,40 @@ start_agent() {
 		>>"$WORK/agent.log" 2>&1 &
 	AGENT_PID=$!
 	BG_PIDS+=("$AGENT_PID")
+}
+
+# The analysis worker (needs WORKER = sentinel-worker): signing key in
+# $N/worker-1.key, public key in $WORKER_PUB. Detection floors are set for
+# lab traffic rates; extra [detect]/[mitigate] lines come from $1.
+worker_config() {
+	: "${WORKER:?set WORKER}"
+	[ -f "$N/worker-1.key" ] || WORKER_PUB=$("$WORKER" key generate --out "$N/worker-1.key")
+	cat >"$WORK/worker.toml" <<CFG
+[worker]
+id = "worker-1"
+signing_key_file = "$N/worker-1.key"
+shards = 4
+[nats]
+url = "$URL"
+ca = "$N/ca.pem"
+nkey_seed_file = "$N/worker-1.nk"
+[detect]
+start_after_s = 3
+end_after_s = 8
+min_pps = 1500
+min_bps = 2000000
+min_syn_pps = 1000
+min_new_sources = 200
+warmup_s = 5
+update_every_s = 2
+[mitigate]
+ttl_s = 120
+min_src_pps = 100
+CFG
+}
+
+start_worker() {
+	ip netns exec "$NS_B" "$WORKER" run --config "$WORK/worker.toml" >>"$WORK/worker.log" 2>&1 &
+	WORKER_PID=$!
+	BG_PIDS+=("$WORKER_PID")
 }

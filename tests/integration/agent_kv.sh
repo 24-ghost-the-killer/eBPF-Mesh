@@ -16,7 +16,7 @@ source "$(dirname "$0")/nats_lab.sh"
 nats_prepare
 lab_net
 nats_start
-pass "NATS up with TLS, nkeys and the four KV buckets"
+pass "NATS up with TLS, nkeys and the KV buckets"
 nats_record config.ack.lab1 stats.lab1 health.lab1 'telemetry.lab1.>'
 agent_config
 start_agent

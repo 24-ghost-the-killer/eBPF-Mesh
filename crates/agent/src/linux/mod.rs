@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The agent proper (Linux): attach, connect, run the tasks, shut down.
 
+mod decisions;
 mod health;
 mod kv;
 mod probe;
@@ -75,6 +76,9 @@ pub async fn run(cfg: Config, keep_attached: bool) -> Result<()> {
     tasks.spawn(health::run(sh.clone()));
     tasks.spawn(health::gc(sh.clone()));
     tasks.spawn(probe::run(sh.clone()));
+    let verifier = decisions::SharedVerifier::default();
+    tasks.spawn(decisions::run_keys(sh.clone(), verifier.clone()));
+    tasks.spawn(decisions::run_decisions(sh.clone(), verifier));
     {
         let (m, addr) = (sh.metrics.clone(), sh.cfg.agent.metrics_listen);
         tasks.spawn(async move {

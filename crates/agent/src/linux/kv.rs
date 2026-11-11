@@ -27,7 +27,7 @@ use tracing::{info, warn};
 
 use sentinel_bpf::maps::{self, U8Val};
 use sentinel_bpf::rules::{self, RuleKind};
-use sentinel_common::abi::{XsAsset, XsRule, XsSvcKey, XS_CFG_F_OBSERVE};
+use sentinel_common::abi::{Reason, XsAsset, XsRule, XsSvcKey, XS_CFG_F_OBSERVE};
 use sentinel_common::msg::{
     key_id, parse_doc, subject_ack, AssetDoc, ConfigAck, PlatformDoc, RulesDoc, ServicesDoc,
     BUCKET_PLATFORM, BUCKET_RULES, BUCKET_SERVICES, BUCKET_TENANTS, PLATFORM_KEY, SCHEMA_V,
@@ -341,6 +341,12 @@ fn reconcile_rules(sh: &Shared, snap: &Snapshot) -> Result<Vec<KeyResult>> {
         }
         results.push(result(key, v, outcome));
     }
+    // Blocks written from signed decisions belong to the decision task
+    // (ADR 0021): KV only replaces them when it describes the same key.
+    actual.retain(|id, r| {
+        !(id.0 == RuleKind::Block && r.reason == Reason::Decision as u32)
+            || desired.contains_key(id)
+    });
     // Expiry converted on another pass differs by the clock jitter between
     // readings; treat < 1 s as unchanged instead of rewriting every rule.
     for (id, want) in desired.iter_mut() {
