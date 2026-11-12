@@ -19,3 +19,5 @@ node_modules/
 /deploy/compose/state/
 /deploy/ansible/inventories/*
 !/deploy/ansible/inventories/example/
+# Python bytecode (Ansible filter plugins and their tests)
+__pycache__/
