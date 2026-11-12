@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 "use client";
-import { ArrowLeft, KeyRound, Radio, ShieldBan, Users } from "lucide-react";
+import { ArrowLeft, KeyRound, Radio, ShieldBan, UserCog, Users } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
@@ -26,6 +26,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
     { href: "/admin/tenants", label: "Tenants", icon: Users },
     { href: "/admin/decisions", label: "Decisions", icon: ShieldBan },
     { href: "/admin/keys", label: "Signing keys", icon: KeyRound },
+    { href: "/admin/account", label: "Account", icon: UserCog },
   ];
   return (
     <div className="flex min-h-dvh flex-col">
@@ -50,16 +51,22 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
           </nav>
         </div>
         <div className="flex items-center gap-2">
-          <Link href="/t" className="flex items-center gap-1 text-sm text-muted-fg underline">
-            <ArrowLeft className="size-4" aria-hidden /> Portal
-          </Link>
+          {me.tenants.length > 0 && (
+            <Link href="/t" className="flex items-center gap-1 text-sm text-muted-fg underline">
+              <ArrowLeft className="size-4" aria-hidden /> Portal
+            </Link>
+          )}
           <ThemeToggle />
         </div>
       </header>
       <main id="main" className="mx-auto w-full max-w-6xl flex-1 p-4 sm:p-8">
         {!me.user.mfa_enabled && (
           <Alert tone="warn" className="mb-6">
-            Platform actions need two-factor authentication. Set it up in your account settings first.
+            Platform actions need two-factor authentication.{" "}
+            <Link href="/admin/account" className="underline">
+              Set it up on your account page
+            </Link>{" "}
+            first.
           </Alert>
         )}
         {children}

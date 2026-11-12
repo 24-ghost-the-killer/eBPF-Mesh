@@ -132,6 +132,9 @@ drops) # packets dropped by block rules at the PoP so far
 		jq -r '[.entries[] | select(.verdict == "drop_block") | .pkts] | add // 0' ;;
 udp-rx) # UDP datagrams that reached the customer server (delivered or no port)
 	ip netns exec "$NS_C" awk '/^Udp:/ { if (!n) { for (i = 1; i <= NF; i++) { if (\$i == "InDatagrams") a = i; if (\$i == "NoPorts") b = i }; n = 1 } else print \$a + \$b }' /proc/net/snmp ;;
+operator) # <email>: a platform administrator without any tenant (as on a fresh install)
+	SENTINEL_DATABASE_URL="${PGURL/postgres@/sentinel_api@}" SENTINEL_ADMIN_PASSWORD="\$3" \
+		"$API" create-admin --config "$WORK/api.toml" --email "\$2" >/dev/null ;;
 promote) # <email>: make the user a platform administrator
 	"$PGSH" sql "$PGD" "UPDATE users SET is_platform_admin = true WHERE email = '\$2'" >/dev/null ;;
 webhooks) # what the webhook sink received (JSON lines)
