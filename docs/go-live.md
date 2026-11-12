@@ -36,19 +36,32 @@ domain name and are off then; password + TOTP still work.
    to `STATUS_PAGE_ORIGIN` before `init.sh` or in `state/config/api.toml`.
 
 ## 3. PoPs, dry run first
-1. Inventory `deploy/ansible/inventories/<site>/` (copy `example`):
-   `sentinel_lab_mode: false`, real ASN/prefixes, upstream neighbours with
-   `max_prefix`, `mgmt_cidrs` that include the Ansible host,
-   `bgp_export_enabled: false`.
-2. `ansible-playbook -i inventories/<site>/hosts.yml playbooks/pop.yml`.
-3. On each PoP: `birdc show protocols` (sessions Established),
-   `birdc show route export <upstream>` (must be empty in the dry run),
-   `sentinelctl stats`, the PoP in the admin panel, Prometheus target up.
-4. Run the kill switch and a drain once; watch the acks.
+On the control-plane host, one command per PoP (NATS user, binaries,
+playbook; nothing is announced):
+
+    cd deploy/compose
+    scripts/add-pop.sh --production --id ams1 --host <mgmt address> --user <sudo user> \
+        --upstream transit1,<neighbour IP>,<their ASN> --mgmt <your admin network>
+
+It needs `SENTINEL_ASN` (and optionally `ANYCAST_PREFIX6`) in `state/.env`,
+SSH access to the server (key, or `--ask-pass`) and writes the inventory with
+the PoP's NATS seed to `state/pops/<id>.yml`. `--help` lists every option.
+(Without the script: copy `deploy/ansible/inventories/example` and run
+`ansible-playbook -i inventories/<site>/hosts.yml playbooks/pop.yml`.)
+
+Then on each PoP: `birdc show protocols` (sessions Established),
+`birdc show route export <upstream>` (must be empty in the dry run),
+`sentinelctl stats`, the PoP in the admin panel, Prometheus target up.
+Run the kill switch and a drain once; watch the acks.
+
+A LAN rehearsal works the same without `--production` (lab mode, the
+documentation prefix, `--upstream` optional) plus `--nats-ip <control host>`
+when `NATS_HOSTNAME` has no DNS entry; a static route on the LAN router
+(`ANYCAST_PREFIX4` via the PoP) stands in for BGP.
 
 ## 4. First announcement: one PoP
-1. Re-run the playbook for **one** PoP with `-e bgp_export_enabled=true
-   --limit <pop>`.
+1. Re-run `scripts/add-pop.sh` for **one** PoP with the same options plus
+   `--announce` (it asks you to type the PoP id).
 2. Verify from outside: looking glasses / RIPE RIS show the prefix with our
    origin and RPKI "valid"; traceroutes from a few networks reach the PoP.
 3. Protect one of **our own** servers: portal signup, protected IP, tunnel

@@ -56,6 +56,16 @@
   no_log: true
   notify: Restart agent
 
+- name: NATS host name without DNS (nats_host_ip; labs, private networks)
+  when: nats_host_ip is defined
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    regexp: '\s{{ nats_url | urlsplit("hostname") | regex_escape }}$'
+    line: "{{ nats_host_ip }} {{ nats_url | urlsplit('hostname') }}"
+    mode: "0644"
+    unsafe_writes: true             # /etc/hosts is a bind mount in containers
+  notify: Restart agent
+
 - name: Agent configuration
   ansible.builtin.template:
     src: agent.toml.j2

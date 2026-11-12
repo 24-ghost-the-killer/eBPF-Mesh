@@ -140,6 +140,10 @@ for b in tenants services rules platform keys; do
 done
 echo "KV buckets ready"
 SH
+# Prometheus PoP targets (site data, git-ignored; scripts/add-pop.sh adds them).
+T="$C/prometheus/targets/pops.json"
+[ -f "$T" ] || echo "[]" >"$T"
+chmod 644 "$T"
 # Containers run as other users: secrets readable inside, not by other host users.
 chmod 755 "$S/config" "$S/nats" "$S/workers"
 chmod 644 "$S"/config/* "$N"/*.pem "$N/server.json" "$S"/workers/*.pub

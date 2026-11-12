@@ -9,7 +9,7 @@
       - pop_uplink_iface is defined
       - pop_ip4 is defined
       - bgp_router_id is defined
-      - bgp_upstreams | length > 0
+      - bgp_upstreams is defined
       - mgmt_cidrs | length > 0
       - sentinel_nats_nkey_seed is defined
     fail_msg: "missing or invalid PoP variables (see inventories/example)"
@@ -41,6 +41,13 @@
     fail_msg: >-
       production: no documentation/private prefixes, no private ASN, and only
       prefixes the internet accepts (IPv4 /24 or shorter, IPv6 /48 or shorter)
+    quiet: true
+
+- name: Production PoPs have at least one BGP upstream
+  when: not (sentinel_lab_mode | bool)
+  ansible.builtin.assert:
+    that: bgp_upstreams | length > 0
+    fail_msg: "production: a PoP needs at least one BGP upstream"
     quiet: true
 
 - name: Every upstream has an import limit and a peer ASN

@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Runs the PoP playbook (deploy/compose/scripts/add-pop.sh): Debian's
+# ansible-core, SSH, and sshpass for servers that only accept a password.
+FROM debian:trixie-slim
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ansible-core openssh-client sshpass python3 \
+    && rm -rf /var/lib/apt/lists/*
