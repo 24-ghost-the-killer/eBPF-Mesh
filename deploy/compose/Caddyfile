@@ -3,6 +3,8 @@
 {
 	admin 0.0.0.0:2019
 	metrics
+	# Clients send no SNI to an IP address (test setups without DNS).
+	default_sni {$PORTAL_DOMAIN}
 	servers {
 		trusted_proxies static private_ranges
 	}

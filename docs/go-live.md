@@ -19,6 +19,10 @@ Lab address ranges must not be used here; the playbooks refuse them.
       from the PoPs' management side only), status page (separate host).
 
 ## 2. Control plane
+A rehearsal without DNS works on any Docker host: `PORTAL_DOMAIN=<its IP>`,
+`TLS_ISSUER=internal` (Caddy's own CA; browsers warn). Passkeys need a
+domain name and are off then; password + TOTP still work.
+
 1. `cd deploy/compose && cp .env.example state/.env`, fill in real values.
 2. `scripts/init.sh`; keep `state/` backed up somewhere safe (it holds every
    secret). Put each PoP's `state/nats/<pop>.nk` into the Ansible vault.
