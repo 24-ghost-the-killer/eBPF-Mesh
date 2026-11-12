@@ -1,0 +1,41 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+- name: BIRD is installed
+  ansible.builtin.apt:
+    name: bird2
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Configuration directory
+  ansible.builtin.file:
+    path: "{{ bird_conf_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Drain include (owned by sentinel-agent afterwards; created once)
+  ansible.builtin.copy:
+    dest: "{{ bird_conf_dir }}/drain.conf"
+    content: "define DRAIN = 0;\n"
+    force: false
+    mode: "0644"
+
+- name: Export switch (dry run until bgp_export_enabled)
+  ansible.builtin.copy:
+    dest: "{{ bird_conf_dir }}/export.conf"
+    content: "# Managed by Ansible (sentinel-edge): local changes are overwritten.\ndefine EXPORT = {{ 1 if bgp_export_enabled | bool else 0 }};\n"
+    mode: "0644"
+  notify: Reconfigure BIRD
+
+- name: BIRD configuration
+  ansible.builtin.template:
+    src: bird.conf.j2
+    dest: "{{ bird_conf_dir }}/bird.conf"
+    mode: "0644"
+    validate: "bird -p -c %s"
+  notify: Reconfigure BIRD
+
+- name: BIRD is running
+  ansible.builtin.service:
+    name: bird
+    state: started
+    enabled: true

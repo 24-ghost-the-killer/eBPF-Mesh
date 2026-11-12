@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+[Unit]
+Description=Run the Sentinel-Edge PoP health check every 2 seconds
+
+[Timer]
+OnBootSec=5s
+OnUnitActiveSec=2s
+AccuracySec=100ms
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,48 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+- name: nftables is installed
+  ansible.builtin.apt:
+    name: nftables
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Rules directory
+  ansible.builtin.file:
+    path: /etc/nftables.d
+    state: directory
+    mode: "0755"
+
+- name: Sentinel ruleset (validated before it is used)
+  ansible.builtin.template:
+    src: sentinel.nft.j2
+    dest: /etc/nftables.d/sentinel.nft
+    mode: "0644"
+    validate: "nft -c -f %s"
+  register: sentinel_nft
+
+- name: Loader unit (own table only; other rulesets are left alone)
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/sentinel-firewall.service
+    mode: "0644"
+    content: |
+      # Managed by Ansible (sentinel-edge): local changes are overwritten.
+      [Unit]
+      Description=Sentinel-Edge PoP firewall (table inet sentinel)
+      Before=network-pre.target bird.service
+      Wants=network-pre.target
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/bin/sh -c 'nft delete table inet sentinel 2>/dev/null; nft -f /etc/nftables.d/sentinel.nft'
+      ExecReload=/bin/sh -c 'nft delete table inet sentinel 2>/dev/null; nft -f /etc/nftables.d/sentinel.nft'
+      ExecStop=/usr/sbin/nft delete table inet sentinel
+      [Install]
+      WantedBy=multi-user.target
+  register: sentinel_fw_unit
+
+- name: Firewall loaded
+  ansible.builtin.systemd_service:
+    name: sentinel-firewall
+    state: "{{ 'restarted' if (sentinel_nft.changed or sentinel_fw_unit.changed) else 'started' }}"
+    enabled: true
+    daemon_reload: "{{ sentinel_fw_unit.changed }}"

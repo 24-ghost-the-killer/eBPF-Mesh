@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+groups:
+  - name: sentinel
+    rules:
+      - alert: PopAgentDown
+        expr: up{job="sentinel-agent"} == 0
+        for: 1m
+        annotations: { summary: "PoP agent {{ $labels.pop }} is not scraped" }
+      - alert: XdpDetached
+        expr: sentinel_xdp_attached == 0
+        for: 30s
+        annotations: { summary: "XDP is not attached on {{ $labels.pop }} (the health check withdraws the PoP)" }
+      - alert: SamplesLost
+        expr: rate(sentinel_sampled_events_lost_total[5m]) > 100
+        for: 5m
+        annotations: { summary: "{{ $labels.pop }} loses telemetry samples" }
+      - alert: DecisionsRefused
+        expr: sum by (pop, result) (rate(sentinel_decisions_total{result=~"bad_signature|unknown_issuer|revoked_issuer|stale|replay"}[10m])) > 0
+        annotations: { summary: "{{ $labels.pop }} refuses decisions ({{ $labels.result }})" }

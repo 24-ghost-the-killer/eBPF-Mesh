@@ -1,0 +1,92 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+- name: Runtime packages
+  ansible.builtin.apt:
+    name: [libelf1t64, zlib1g, ethtool, iproute2]
+    state: present
+
+- name: Uplink driver
+  ansible.builtin.command: ethtool -i {{ pop_uplink_iface }}
+  register: ethtool_i
+  changed_when: false
+
+- name: Native XDP on the uplink (or generic explicitly allowed)
+  ansible.builtin.set_fact:
+    pop_driver: "{{ ethtool_i.stdout | regex_search('driver: (\\S+)', '\\1') | first }}"
+
+- name: The uplink driver supports native XDP
+  ansible.builtin.assert:
+    that: pop_driver in xdp_native_drivers or agent_allow_generic_xdp | bool
+    fail_msg: "driver {{ pop_driver }} has no native XDP support (set agent_allow_generic_xdp only in labs)"
+    quiet: true
+
+- name: Directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop: [/etc/sentinel, /usr/lib/sentinel]
+
+- name: Binaries
+  ansible.builtin.copy:
+    src: "{{ sentinel_artifacts_dir }}/bin/{{ item }}"
+    dest: "/usr/local/bin/{{ item }}"
+    mode: "0755"
+  loop: [sentinel-agent, sentinelctl]
+  notify: Restart agent
+
+- name: XDP object
+  ansible.builtin.copy:
+    src: "{{ sentinel_artifacts_dir }}/xdp_main.o"
+    dest: /usr/lib/sentinel/xdp_main.o
+    mode: "0644"
+  notify: Restart agent
+
+- name: NATS CA
+  ansible.builtin.copy:
+    src: "{{ nats_ca_file }}"
+    dest: /etc/sentinel/nats-ca.pem
+    mode: "0644"
+  notify: Restart agent
+
+- name: NATS nkey seed (secret)
+  ansible.builtin.copy:
+    content: "{{ sentinel_nats_nkey_seed }}\n"
+    dest: "/etc/sentinel/{{ pop_id }}.nk"
+    mode: "0600"
+  no_log: true
+  notify: Restart agent
+
+- name: NATS host name without DNS (nats_host_ip; labs, private networks)
+  when: nats_host_ip is defined
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    regexp: '\s{{ nats_url | urlsplit("hostname") | regex_escape }}$'
+    line: "{{ nats_host_ip }} {{ nats_url | urlsplit('hostname') }}"
+    mode: "0644"
+    unsafe_writes: true             # /etc/hosts is a bind mount in containers
+  notify: Restart agent
+
+- name: Agent configuration
+  ansible.builtin.template:
+    src: agent.toml.j2
+    dest: /etc/sentinel/agent.toml
+    mode: "0644"
+  notify: Restart agent
+
+- name: Configuration is valid
+  ansible.builtin.command: /usr/local/bin/sentinel-agent check-config --config /etc/sentinel/agent.toml
+  changed_when: false
+
+- name: Agent unit
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../systemd/sentinel-agent.service"
+    dest: /etc/systemd/system/sentinel-agent.service
+    mode: "0644"
+  notify: Restart agent
+
+- name: Agent is running
+  ansible.builtin.systemd_service:
+    name: sentinel-agent
+    state: started
+    enabled: true
+    daemon_reload: true

@@ -1,0 +1,25 @@
+# {{ ansible_managed }}
+# PoP host firewall (ADR 0026): management (SSH, metrics) only from the
+# management networks, BGP only from the configured upstreams. Customer
+# traffic never reaches this: XDP handles it before the kernel.
+table inet sentinel {
+  set mgmt4 { type ipv4_addr; flags interval; {% if mgmt_cidrs | reject('search', ':') | list %}elements = { {{ mgmt_cidrs | reject('search', ':') | join(', ') }} }{% endif %} }
+  set mgmt6 { type ipv6_addr; flags interval; {% if mgmt_cidrs | select('search', ':') | list %}elements = { {{ mgmt_cidrs | select('search', ':') | join(', ') }} }{% endif %} }
+  set prom4 { type ipv4_addr; flags interval; {% if prometheus_cidrs | default([]) | reject('search', ':') | list %}elements = { {{ prometheus_cidrs | reject('search', ':') | join(', ') }} }{% endif %} }
+  set bgp4 { type ipv4_addr; {% if bgp_upstreams | map(attribute='neighbor') | map('string') | reject('search', ':') | list %}elements = { {{ bgp_upstreams | map(attribute='neighbor') | map('string') | reject('search', ':') | join(', ') }} }{% endif %} }
+  set bgp6 { type ipv6_addr; {% if bgp_upstreams | map(attribute='neighbor') | map('string') | select('search', ':') | list %}elements = { {{ bgp_upstreams | map(attribute='neighbor') | map('string') | select('search', ':') | join(', ') }} }{% endif %} }
+
+  chain input {
+    type filter hook input priority filter; policy drop;
+    ct state established,related accept
+    ct state invalid drop
+    iif "lo" accept
+    meta l4proto { icmp, ipv6-icmp } accept
+    tcp dport 22 ip saddr @mgmt4 accept
+    tcp dport 22 ip6 saddr @mgmt6 accept
+    tcp dport 179 ip saddr @bgp4 accept
+    tcp dport 179 ip6 saddr @bgp6 accept
+    tcp dport {{ agent_metrics_port }} ip saddr @prom4 accept
+    counter comment "dropped by sentinel"
+  }
+}

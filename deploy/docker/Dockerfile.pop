@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# PoP artifacts for Ansible (sentinel-agent, sentinelctl, the XDP object),
+# built on Ubuntu 24.04 so the binaries run on its glibc and anything newer
+# (Debian 13, Ubuntu 26.04). Build context: the repository root.
+#
+#   docker build -f deploy/docker/Dockerfile.pop --target out --output type=local,dest=build/pop .
+FROM ubuntu:24.04 AS build
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        build-essential ca-certificates clang llvm curl make pkg-config \
+        libbpf-dev libelf-dev zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo PATH=/usr/local/cargo/bin:$PATH
+RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.94.1
+WORKDIR /src
+COPY . .
+RUN make -C ebpf OUT=/out \
+    && cargo build --release --locked -p sentinel-agent -p sentinel-ctl \
+    && mkdir -p /out/bin && cp target/release/sentinel-agent target/release/sentinelctl /out/bin/
+
+FROM scratch AS out
+COPY --from=build /out/bin /bin
+COPY --from=build /out/xdp_main.o /xdp_main.o

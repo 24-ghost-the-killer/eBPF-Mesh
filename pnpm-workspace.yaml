@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+packages:
+  - web
+  - tests/e2e
+
+# Supply-chain hygiene: never install a package version younger than 14 days.
+minimumReleaseAge: 20160
+
+# Only these packages may run install scripts.
+onlyBuiltDependencies:
+  - sharp
+  - unrs-resolver
+  - esbuild

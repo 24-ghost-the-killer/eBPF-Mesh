@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+- name: Restart agent
+  ansible.builtin.systemd_service:
+    name: sentinel-agent
+    state: restarted
+    daemon_reload: true

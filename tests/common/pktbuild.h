@@ -1,199 +1,185 @@
 /* SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause */
 /*
- * pktbuild.h - minimal frame builder for dataplane tests.
+ * Tiny frame builder for BPF tests. Writes raw bytes (network order) so the
+ * tests do not depend on how the kernel headers lay out structs.
  *
- * Builds frames byte by byte so tests can express exactly the malformed
- * shapes they need. Length fields (IPv4 tot_len, IPv6 payload_len, UDP len)
- * are filled by pb_finalize() from the recorded header offsets; a test that
- * wants a broken length overwrites it afterwards with pb_put16().
- *
- * Header-only and dependency-free so both the host parser tests and the
- * libbpf harness can use it.
+ * Typical use:
+ *   struct pkt p = {0};
+ *   eth(&p, 0x0800);
+ *   size_t ip = ipv4(&p, IPPROTO_TCP, 5, 0);
+ *   tcp(&p, 40000, 443, TCP_SYN, 5);
+ *   fix_ipv4_len(&p, ip);
  */
-#ifndef EM_TEST_PKTBUILD_H
-#define EM_TEST_PKTBUILD_H
+#ifndef XS_PKTBUILD_H
+#define XS_PKTBUILD_H
 
 #include <stdint.h>
+#include <stddef.h>
 #include <string.h>
 #include <assert.h>
 
-#define PB_MAX 4096
+#define PKT_MAX 2048
 
-struct pb {
-	uint8_t  buf[PB_MAX];
-	uint32_t len;
-	int32_t  ip4_off;  /* offset of the (last) IPv4 header, -1 if none */
-	int32_t  ip6_off;  /* offset of the (last) IPv6 header, -1 if none */
-	int32_t  udp_off;  /* offset of the UDP header, -1 if none */
+struct pkt {
+	uint8_t b[PKT_MAX];
+	size_t len;
 };
 
-static inline void pb_init(struct pb *b)
+#define TCP_FIN 0x01
+#define TCP_SYN 0x02
+#define TCP_RST 0x04
+#define TCP_PSH 0x08
+#define TCP_ACK 0x10
+
+/* Lab addresses (spec section 11.1): bot -> protected IP. */
+static const uint8_t SRC4[4] = { 203, 0, 113, 7 };
+static const uint8_t DST4[4] = { 198, 51, 100, 10 };
+static const uint8_t SRC6[16] = { 0x20, 0x01, 0x0d, 0xb8, 0xff, 0xff, 0, 0,
+				  0,    0,    0,    0,    0,    0,    0, 7 };
+static const uint8_t DST6[16] = { 0x20, 0x01, 0x0d, 0xb8, 0x01, 0x00, 0, 0,
+				  0,    0,    0,    0,    0,    0,    0, 0x10 };
+
+static inline uint8_t *put(struct pkt *p, const void *src, size_t n)
 {
-	memset(b, 0, sizeof(*b));
-	b->ip4_off = b->ip6_off = b->udp_off = -1;
+	uint8_t *at = p->b + p->len;
+
+	assert(p->len + n <= PKT_MAX);
+	if (src)
+		memcpy(at, src, n);
+	else
+		memset(at, 0, n);
+	p->len += n;
+	return at;
 }
 
-static inline uint8_t *pb_put(struct pb *b, uint32_t n)
+static inline void w16(uint8_t *at, uint16_t v)
 {
-	uint8_t *p;
-
-	assert(b->len + n <= PB_MAX);
-	p = b->buf + b->len;
-	memset(p, 0, n);
-	b->len += n;
-	return p;
+	at[0] = v >> 8;
+	at[1] = v & 0xff;
 }
 
-static inline void pb_put16(struct pb *b, uint32_t off, uint16_t v)
+static inline void w32(uint8_t *at, uint32_t v)
 {
-	b->buf[off] = v >> 8;
-	b->buf[off + 1] = v & 0xFF;
+	w16(at, v >> 16);
+	w16(at + 2, v & 0xffff);
 }
 
-static inline void pb_put32(uint8_t *p, uint32_t v)
-{
-	p[0] = v >> 24; p[1] = v >> 16; p[2] = v >> 8; p[3] = v;
-}
-
-/* Ethernet header; `proto` is the ethertype or the outer VLAN TPID. */
-static inline void pb_eth(struct pb *b, uint16_t proto)
+static inline void eth(struct pkt *p, uint16_t proto)
 {
 	static const uint8_t dst[6] = { 0x02, 0, 0, 0, 0, 0x02 };
 	static const uint8_t src[6] = { 0x02, 0, 0, 0, 0, 0x01 };
-	uint8_t *p = pb_put(b, 14);
 
-	memcpy(p, dst, 6);
-	memcpy(p + 6, src, 6);
-	p[12] = proto >> 8;
-	p[13] = proto & 0xFF;
+	put(p, dst, 6);
+	put(p, src, 6);
+	w16(put(p, NULL, 2), proto);
 }
 
-/* One VLAN tag: TCI (PCP 0) + the next ethertype/TPID. */
-static inline void pb_vlan(struct pb *b, uint16_t vid, uint16_t next)
+/* A VLAN tag; the previous ethertype must be 0x8100 or 0x88a8. */
+static inline void vlan(struct pkt *p, uint16_t vid, uint16_t next_proto)
 {
-	uint8_t *p = pb_put(b, 4);
+	uint8_t *h = put(p, NULL, 4);
 
-	p[0] = (vid >> 8) & 0x0F;
-	p[1] = vid & 0xFF;
-	p[2] = next >> 8;
-	p[3] = next & 0xFF;
+	w16(h, vid & 0x0fff);
+	w16(h + 2, next_proto);
 }
 
-/* IPv4 header with `opt_words` 32-bit option words (NOP-filled). */
-static inline void pb_ipv4(struct pb *b, uint8_t proto, uint32_t saddr, uint32_t daddr,
-			   uint8_t opt_words, uint16_t frag_off)
+/* IPv4 header with ihl 32-bit words (options are NOPs). Returns its offset. */
+static inline size_t ipv4(struct pkt *p, uint8_t proto, uint8_t ihl,
+			  uint16_t frag_off)
 {
-	uint32_t hlen = 20 + 4u * opt_words;
-	uint8_t *p;
+	size_t off = p->len;
+	uint8_t *h = put(p, NULL, (size_t)ihl * 4);
 
-	b->ip4_off = b->len;
-	p = pb_put(b, hlen);
-	p[0] = 0x40 | (uint8_t)(hlen / 4);
-	p[6] = frag_off >> 8;
-	p[7] = frag_off & 0xFF;
-	p[8] = 64;
-	p[9] = proto;
-	pb_put32(p + 12, saddr);
-	pb_put32(p + 16, daddr);
-	memset(p + 20, 0x01, hlen - 20); /* IPOPT_NOP */
+	h[0] = 0x40 | (ihl & 0x0f);
+	w16(h + 2, ihl * 4); /* fixed up by fix_ipv4_len() */
+	w16(h + 4, 0x1234);
+	w16(h + 6, frag_off);
+	h[8] = 64;
+	h[9] = proto;
+	memcpy(h + 12, SRC4, 4);
+	memcpy(h + 16, DST4, 4);
+	for (size_t i = 20; i < (size_t)ihl * 4; i++)
+		h[i] = 0x01; /* IPOPT_NOOP */
+	return off;
 }
 
-/* IPv6 header; addresses are ::<lo> style (low 32 bits given). */
-static inline void pb_ipv6(struct pb *b, uint8_t nexthdr, uint32_t saddr_lo, uint32_t daddr_lo)
+static inline void fix_ipv4_len(struct pkt *p, size_t ip_off)
 {
-	uint8_t *p;
-
-	b->ip6_off = b->len;
-	p = pb_put(b, 40);
-	p[0] = 0x60;
-	p[6] = nexthdr;
-	p[7] = 64;
-	p[8] = 0x20; p[9] = 0x01; p[10] = 0x0d; p[11] = 0xb8; /* 2001:db8:: */
-	pb_put32(p + 20, saddr_lo);
-	p[24] = 0x20; p[25] = 0x01; p[26] = 0x0d; p[27] = 0xb8;
-	pb_put32(p + 36, daddr_lo);
+	w16(p->b + ip_off + 2, p->len - ip_off);
 }
 
-/* Generic extension header (HBH / routing / dst opts): (units+1)*8 bytes. */
-static inline void pb_ipv6_ext(struct pb *b, uint8_t nexthdr, uint8_t units)
+/* IPv6 header. Returns its offset. */
+static inline size_t ipv6(struct pkt *p, uint8_t nexthdr)
 {
-	uint8_t *p = pb_put(b, (units + 1u) * 8);
+	size_t off = p->len;
+	uint8_t *h = put(p, NULL, 40);
 
-	p[0] = nexthdr;
-	p[1] = units;
-	p[2] = 0x01; /* PadN option, keeps HBH/DST syntactically plausible */
-	p[3] = (uint8_t)((units + 1u) * 8 - 4);
+	h[0] = 0x60;
+	h[6] = nexthdr;
+	h[7] = 64;
+	memcpy(h + 8, SRC6, 16);
+	memcpy(h + 24, DST6, 16);
+	return off;
 }
 
-/* Authentication header: (units+2)*4 bytes. */
-static inline void pb_ipv6_ah(struct pb *b, uint8_t nexthdr, uint8_t units)
+static inline void fix_ipv6_len(struct pkt *p, size_t ip_off)
 {
-	uint8_t *p = pb_put(b, (units + 2u) * 4);
-
-	p[0] = nexthdr;
-	p[1] = units;
+	w16(p->b + ip_off + 4, p->len - ip_off - 40);
 }
 
-/* Fragment header; offset in 8-octet units. */
-static inline void pb_ipv6_frag(struct pb *b, uint8_t nexthdr, uint16_t offset, int more)
+/* Generic extension header (HOP/ROUTING/DEST) of (hdrlen + 1) * 8 bytes. */
+static inline void ext6(struct pkt *p, uint8_t next, uint8_t hdrlen)
 {
-	uint8_t *p = pb_put(b, 8);
-	uint16_t fo = (uint16_t)(offset << 3) | (more ? 1 : 0);
+	uint8_t *h = put(p, NULL, ((size_t)hdrlen + 1) * 8);
 
-	p[0] = nexthdr;
-	p[2] = fo >> 8;
-	p[3] = fo & 0xFF;
-	pb_put32(p + 4, 0x12345678);
+	h[0] = next;
+	h[1] = hdrlen;
+	h[2] = 0x01; /* PadN option so the header is well formed */
+	h[3] = (uint8_t)(((size_t)hdrlen + 1) * 8 - 4);
 }
 
-static inline void pb_tcp(struct pb *b, uint16_t sport, uint16_t dport, uint8_t flags,
-			  uint8_t doff_words)
+/* IPv6 fragment header; offset in 8-byte units. */
+static inline void frag6(struct pkt *p, uint8_t next, uint16_t offset, int mf)
 {
-	uint32_t hlen = doff_words >= 5 ? doff_words * 4u : 20;
-	uint8_t *p = pb_put(b, hlen);
+	uint8_t *h = put(p, NULL, 8);
 
-	p[0] = sport >> 8; p[1] = sport & 0xFF;
-	p[2] = dport >> 8; p[3] = dport & 0xFF;
-	p[12] = (uint8_t)(doff_words << 4);
-	p[13] = flags;
-	p[14] = 0xFF; p[15] = 0xFF; /* window */
+	h[0] = next;
+	w16(h + 2, (uint16_t)(offset << 3) | (mf ? 1 : 0));
+	w32(h + 4, 0xdeadbeef);
 }
 
-static inline void pb_udp(struct pb *b, uint16_t sport, uint16_t dport)
+static inline void tcp(struct pkt *p, uint16_t sport, uint16_t dport,
+		       uint8_t flags, uint8_t doff)
 {
-	uint8_t *p;
+	uint8_t *h = put(p, NULL, (size_t)doff * 4);
 
-	b->udp_off = b->len;
-	p = pb_put(b, 8);
-	p[0] = sport >> 8; p[1] = sport & 0xFF;
-	p[2] = dport >> 8; p[3] = dport & 0xFF;
+	w16(h, sport);
+	w16(h + 2, dport);
+	w32(h + 4, 1000);
+	h[12] = doff << 4;
+	h[13] = flags;
+	w16(h + 14, 64240);
 }
 
-static inline void pb_icmp(struct pb *b, uint8_t type, uint8_t code)
+static inline void udp(struct pkt *p, uint16_t sport, uint16_t dport,
+		       size_t payload)
 {
-	uint8_t *p = pb_put(b, 8);
+	uint8_t *h = put(p, NULL, 8);
 
-	p[0] = type;
-	p[1] = code;
+	w16(h, sport);
+	w16(h + 2, dport);
+	w16(h + 4, 8 + payload);
+	put(p, NULL, payload);
 }
 
-static inline void pb_payload(struct pb *b, uint32_t n)
+/* ICMP / ICMPv6 echo request header (8 bytes). */
+static inline void icmp_echo(struct pkt *p, int v6)
 {
-	uint8_t *p = pb_put(b, n);
+	uint8_t *h = put(p, NULL, 8);
 
-	for (uint32_t i = 0; i < n; i++)
-		p[i] = (uint8_t)i;
+	h[0] = v6 ? 128 : 8;
+	w16(h + 4, 1);
+	w16(h + 6, 1);
 }
 
-/* Fill IPv4 tot_len, IPv6 payload_len and UDP len from the current length. */
-static inline void pb_finalize(struct pb *b)
-{
-	if (b->ip4_off >= 0)
-		pb_put16(b, b->ip4_off + 2, (uint16_t)(b->len - b->ip4_off));
-	if (b->ip6_off >= 0)
-		pb_put16(b, b->ip6_off + 4, (uint16_t)(b->len - b->ip6_off - 40));
-	if (b->udp_off >= 0)
-		pb_put16(b, b->udp_off + 4, (uint16_t)(b->len - b->udp_off));
-}
-
-#endif /* EM_TEST_PKTBUILD_H */
+#endif /* XS_PKTBUILD_H */

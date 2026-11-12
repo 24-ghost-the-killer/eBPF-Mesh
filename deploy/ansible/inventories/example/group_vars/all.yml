@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Example values. Secrets (nkey seeds, CA) come from Ansible Vault or the
+# environment; never commit real ones.
+
+# true only for the lab: then every prefix must be a documentation/private
+# one and the ASN private. Production refuses those (and vice versa).
+sentinel_lab_mode: true
+
+sentinel_asn: 65010
+sentinel_prefixes: ["198.51.100.0/24", "2001:db8:100::/48"]
+sentinel_tunnel_ep4: 198.51.100.1
+
+# Dry run until go-live: BGP sessions come up but nothing is announced.
+bgp_export_enabled: false
+
+# Only these networks may reach SSH and the agent's metrics on PoPs.
+mgmt_cidrs: ["192.0.2.0/24"]
+prometheus_cidrs: ["192.0.2.0/24"]
+
+nats_url: tls://nats.mgmt.example.org:4222
+nats_ca_file: "{{ playbook_dir }}/../../state/nats/ca.pem"       # control host path
+# Per PoP: sentinel_nats_nkey_seed (vault) for the PoP's NATS user.
+
+# Built binaries and the XDP object on the control host (make lab files /
+# CI artifacts): sentinel-agent, sentinelctl, xdp_main.o, sentinel-health.sh
+sentinel_artifacts_dir: "{{ playbook_dir }}/../../../build/lab"

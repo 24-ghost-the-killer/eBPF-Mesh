@@ -1,134 +1,374 @@
-# Building, testing and running
+# Running and testing
 
-## Where things run
+## Requirements
 
-| Target | macOS | Linux user | Linux root | Docker (`make docker-test`) |
-|---|---|---|---|---|
-| `make` (Rust workspace) | yes | yes | - | yes |
-| `make` (XDP object, test binaries) | - | yes | - | yes |
-| `make test` (host dataplane tests + `cargo test`) | yes | yes | - | yes |
-| `make lint` | yes | yes | - | yes |
-| `sudo make test-bpf` | - | - | yes | yes |
-| `sudo make test-integration` | - | - | yes | yes |
+- Linux kernel 6.x (native XDP, bpf_link for XDP, BPF_PROG_TEST_RUN)
+- clang/LLVM, libbpf headers (`libbpf-dev`), `libelf-dev`, `zlib1g-dev`, `pkg-config`
+- Rust (version pinned in `rust-toolchain.toml`; rustup picks it up)
+- Kernel 5.18+ for `bpf_xdp_load_bytes`/`store_bytes` (6.x recommended)
+- For tests: `iproute2` (with libbpf support for `ip link ... xdp obj`),
+  `iputils-ping`, `jq`, `curl`, `ethtool`, `openssl`, `python3`, `nsenter`
+  (util-linux), `nats-server` and `nats` (`deploy/docker/install-nats.sh`
+  installs the pinned versions), PostgreSQL 16+ server binaries (`initdb`)
+- For the web app: Node.js 24 LTS and pnpm (`deploy/docker/install-node.sh`
+  installs the pinned versions); the browser tests download Chromium via
+  Playwright
+- bpffs mounted at `/sys/fs/bpf` (systemd does this; otherwise
+  `mount -t bpf bpf /sys/fs/bpf`)
 
-Build output goes to `build/<os>-<arch>/` and `target/<os>-<arch>/`, so a
-macOS checkout mounted into a Linux container never mixes artefacts.
-
-## Requirements (Linux)
-
-- Kernel 6.1+ with BTF (Debian 12+, Ubuntu 22.04+).
-- clang/llvm 16+, libbpf-dev 1.0+, libelf-dev, zlib1g-dev, pkg-config,
-  linux-libc-dev, make, gcc.
-- iproute2, ping, python3 (integration test).
-- Rust toolchain pinned in `rust-toolchain.toml` (rustup installs it).
-
-`scripts/setup-dev-vm.sh` installs all of this on a Debian/Ubuntu VM.
-
-## macOS
+## Build and test
 
 ```sh
-make test         # host dataplane tests (ASan/UBSan) + cargo test
-make lint
-make docker-test  # everything, incl. verifier and veth tests, in a privileged
-                  # Linux container (needs Docker Desktop running)
+make                         # build/ebpf/xdp_main.o + target/debug/sentinelctl
+make test                    # cargo fmt --check, clippy -D warnings, cargo test
+make test-api                # API integration tests (throwaway PostgreSQL)
+sudo make test-bpf           # 284 BPF_PROG_TEST_RUN checks
+sudo make test-integration   # veth_counts, tunnel, policy_live, synflood, agent_kv, decisions, api_e2e
+make test-web                # web: API client drift, typecheck, Vitest, next build
+sudo make test-e2e           # Playwright: onboarding, auth, isolation, accessibility (full lab)
 ```
 
-Docker Desktop's Linux VM provides a real kernel (verified with
-7.0.14-linuxkit, arm64): the verifier, `BPF_PROG_TEST_RUN` and native XDP on
-veth all work there. `make docker-shell` opens a shell in the same container.
+`sudo make test-integration` does not build the Rust binaries (cargo is
+usually not on root's PATH), so run `make` as your normal user first.
 
-## Linux VM (e.g. Proxmox)
-
-One VM is enough for every phase up to and including the Phase 4 lab
-(containerlab runs all nodes as containers inside it). 2 vCPU / 4 GB is
-plenty for Phases 0-3; plan 4 vCPU / 8 GB for the lab.
-
-```sh
-git clone <repo> && cd eBPF-Mesh
-scripts/setup-dev-vm.sh        # once
-make                           # as your user: XDP object, Rust, test binaries
-make test                      # unprivileged
-sudo make test-bpf             # verifier + BPF_PROG_TEST_RUN corpus
-sudo make test-integration     # veth/netns end-to-end
-```
-
-The sudo targets only depend on built files, so root never runs cargo; run
-`make` as your user first.
-
-## CI
-
-`.github/workflows/ci.yml` runs `make lint test` on Ubuntu and macOS, and
-`make all` + `sudo make test-bpf` + `sudo make test-integration` on an Ubuntu
-24.04 runner (real 6.x kernel).
-
-## Using meshctl
-
-```sh
-# attach in native (driver) mode; maps and program pinned per interface
-sudo meshctl attach -i eth1 --obj build/linux-x86_64/em_xdp.bpf.o
-
-# NIC without native XDP (or a test): generic mode, explicitly
-sudo meshctl attach -i eth1 --obj ... --mode generic
-
-# upgrade the program atomically, keeping counters
-sudo meshctl attach -i eth1 --obj ... --replace
-
-# counters: table, JSON, or rates every second
-sudo meshctl stats -i eth1
-sudo meshctl stats -i eth1 --all
-sudo meshctl stats -i eth1 --json
-sudo meshctl stats -i eth1 --watch 1 --count 10
-
-# detach and remove pins (--keep-maps keeps the counters)
-sudo meshctl detach -i eth1
-```
-
-Global flags: `--pin-root` (default `/sys/fs/bpf/ebpf-mesh`), `-v` (libbpf
-debug output, including the verifier log when a load fails).
-
-`meshctl` refuses to:
-
-- attach over an existing program without `--replace`;
-- replace or detach a program it did not attach (for example one loaded with `ip link`);
-- switch native <-> generic with `--replace` (detach first).
-
-## Agent and worker (Phase 0 stubs)
-
-```sh
-mesh-agent  --config configs/agent.example.toml
-mesh-worker --config configs/worker.example.toml
-```
-
-Both validate their TOML (unknown fields are errors), print what they would
-manage, and exit. See `configs/*.example.toml` for every option.
-
-## Test suites
-
-| Suite | What it proves |
+| Integration suite | Proves |
 |---|---|
-| `tests/bpf/parser_host.c` | 73 corpus frames: parse result, every parsed field, and that **exactly** the expected counter slots move (by 1 packet and the frame length). Truncation fuzz over every prefix of every frame, 200,000 bit-flip mutations; ASan/UBSan with a `NET_IP_ALIGN` buffer layout. |
-| `tests/bpf/test_xdp.c` | The real object through the real verifier; every corpus frame via `BPF_PROG_TEST_RUN`: `XDP_PASS`, output bytes identical to input, exact per-slot counter deltas; `sum(parse) == sum(verdicts) == rx`. |
-| `cargo test` | ABI drift against `abi.h`, per-CPU summing, wrapping deltas, pin layout and interface name validation, CLI parsing, config validation, output rendering. |
-| `tests/integration/veth.sh` | 27 checks on a veth pair + netns: native and generic attach (verified from the kernel's view), ping through XDP, crafted malformed frames counted exactly, invariants, refusal of double attach and cross-mode replace, atomic replace keeps counters, clean detach, refusal to replace/detach a foreign program. |
+| `veth_counts.sh` | native attach, exact per-verdict counters, generic refused, clean detach |
+| `tunnel.sh` | phase 3 acceptance: delivery through the tunnel, the origin sees the real client IP, tunnel return and DSR, 1 MiB both ways, oversize counted, MSS clamp rescues a wrong customer MTU |
+| `policy_live.sh` | rate limit, block/allow with TTL and gc, observe vs mitigate, kill switch, services, PoP traffic bypass |
+| `api_e2e.sh` | the whole platform: API signup, protected IP, tunnel script, traffic through the PoP, policy and rules from the API enforced, "active on 1 of 1 PoPs" |
+| `agent_kv.sh` | phase 4 acceptance: `nats kv put` configures a live PoP; KV policy/services/rules enforced and acked; bad documents rejected safely; stats, telemetry, health, heartbeat, metrics; NATS permissions and TLS; crash, resync, clean stop |
+| `decisions.sh` | signed decisions at the PoP: trust, signature, window, replay, revocation, allowlist, TTL expiry in XDP, survives KV reconcile, NATS permissions |
+| `synflood.sh` | phase 2 acceptance: a spoofed SYN flood never reaches the server while `curl` succeeds; control run in observe mode |
+| `portal_e2e.sh` (`make test-e2e`) | phase 6 acceptance: Playwright drives Chromium through signup, email verification, passkey 2FA, protecting a server, the tunnel script and tunnel test, live traffic, mitigate, block rules, passkey login; TOTP login; security headers; tenant isolation in pages, API and WebSocket; axe accessibility checks (light/dark, phone width); phase 7 acceptance: a UDP flood detected, mitigated and shown with no manual action, signed webhooks |
 
-## Known limitations (Phase 0)
+### On macOS
 
-- **Observe-only.** Nothing is dropped yet; that is Phase 1.
-- **VLAN offload.** Many NICs strip the outer VLAN tag into metadata before
-  XDP runs (`rx-vlan-offload`). On those, frames look untagged to the program
-  and `l2_vlan*` stay 0. Disable with `ethtool -K <if> rxvlan off` if VLAN
-  visibility matters; a metadata kfunc can be used later.
-- **Single-buffer XDP.** The program is `SEC("xdp")`, so the kernel refuses
-  to attach it to a device whose MTU needs multi-buffer XDP (jumbo frames on
-  many drivers). Fine for the lab's 1500-byte MTU.
-- **Parse depth.** At most 2 VLAN tags and 6 IPv6 extension headers; deeper
-  frames are classified `UNSUP_*` and passed.
-- **No reassembly.** Non-first fragments carry no ports; they are counted
-  under `frag_later` with their L4 protocol from the IP header.
-- **Unaligned loads.** The parser reads wire structs in place. That is
-  fine on x86-64 and arm64 (the tested architectures). Strict-alignment
-  architectures are not supported.
-- **Agent/worker** only validate configuration.
-- **Verified environments:** kernel 7.0.14-linuxkit arm64 (Docker Desktop) and
-  macOS (host tests). The x86-64 CI job and the Proxmox VM still have to be
-  run for the first time.
+```sh
+open -a Docker               # Docker Desktop must be running
+make docker-test             # all suites in a privileged Linux container
+make docker-shell            # interactive shell, repo mounted at /src
+```
+
+The integration suites use three network namespaces (internet router +
+client, PoP, origin) joined by veth pairs; see `tests/integration/lib.sh`.
+They switch off TX checksum offload on the veths: veth leaves checksums
+half-computed for "hardware", and XDP_TX would forward them that way. On
+Docker Desktop's kernel the origin uses the fallback `tunl0` device
+(creating an IPIP device in a namespace has crashed that VM); elsewhere the
+generated script creates `sentinel0`. Override with
+`SENTINEL_TEST_TUNNEL_DEV`.
+
+Cargo's registry and target directory live in Docker volumes
+(`sentinel-cargo`, `sentinel-target`) so Linux artifacts never mix with the
+Mac's `target/`; so do `node_modules`, `web/.next`, the pnpm store and
+Playwright's browsers. `make docker-test` uses the `sentinel-web` image
+(`Dockerfile.web`: the dev image plus Node.js and Chromium's libraries).
+Failed browser tests leave traces and screenshots in
+`build/e2e-artifacts/` (`pnpm --filter e2e exec playwright show-trace ...`).
+
+## Operating sentinelctl
+
+```sh
+# attach (PoP addresses also via XS_POP_IP4 / XS_POP_IP6; MTU is read from the NIC)
+sentinelctl attach --iface eth0 --pop-ip4 10.10.1.1 --pop-ip6 2001:db8:100::1
+sentinelctl config set --tunnel-ep4 198.51.100.1 --nexthop-mac 02:00:00:00:00:fe
+sentinelctl detach --iface eth0
+
+# protect a prefix (new assets observe only)
+sentinelctl asset add 198.51.100.10/32 --tenant 42 --origin 192.0.2.10
+sentinelctl asset list
+sentinelctl asset script 1 [--return tunnel|dsr] > sentinel-tunnel.sh
+sentinelctl asset del 1                              # also removes its services
+
+# per-asset policy (by id or exact prefix)
+sentinelctl policy show --asset 1
+sentinelctl service add --asset 1 --proto tcp --port 443   # omit --port: whole protocol
+sentinelctl policy set --asset 1 --enforce-services on --syncookies on \
+    --pps-per-src 1000 --burst 2000 --fragments drop
+sentinelctl policy set --asset 1 --mitigate on
+
+# what is happening
+sentinelctl stats [--watch --interval 1]
+sentinelctl --json stats        # {"entries":[{"tenant":42,"verdict":"pass","pkts":..,"bytes":..}]}
+
+# rules (tenant 0 = global; IPv4 or IPv6; /0 is refused)
+sentinelctl block add 203.0.113.0/24 --ttl 10m      # blocks always expire
+sentinelctl allow add 192.0.2.10 --tenant 42        # permanent unless --ttl
+sentinelctl block list | allow list | block del 203.0.113.0/24
+sentinelctl gc                                      # remove expired entries
+
+# PoP-wide
+sentinelctl config show | config set --verify-ttl 5m | config set --mtu 9000
+sentinelctl syncookie rotate
+sentinelctl observe on          # KILL SWITCH: count everything, drop nothing
+sentinelctl observe off
+```
+
+Every flag has an environment equivalent where it makes sense (see
+`.env.example`): `XS_IFACE`, `SENTINEL_BPF_OBJ`, `SENTINEL_PIN_DIR`,
+`XS_POP_IP4`, `XS_POP_IP6`.
+
+**Onboarding a customer server.** `asset add` with the server's address as
+`--origin`; give the customer `asset script <id>`; they run it as root
+(`sh sentinel-tunnel.sh`, `... down` to undo; safe to re-run). It creates an
+IPIP (or `sit` for IPv6) device with MTU 1480 and no fixed remote, puts the
+protected prefix on `lo`, and routes replies from it back through the tunnel
+to the anycast tunnel endpoint. `--return dsr` instead lets replies leave
+directly with the protected IP as source (needs a provider without BCP38
+filtering) and lowers the advertised MSS so client packets fit the tunnel.
+
+**Rolling out a policy.** Configure services and limits in observe mode, watch
+`sentinelctl stats` until the `drop_*` counters only show traffic you really
+want dropped, then `policy set --asset <id> --mitigate on`. With SYN cookies
+on, observe mode counts all non-SYN TCP as `drop_unverified` (nothing is
+verified without challenges), so judge those counters only after switching on.
+
+## Running a PoP with sentinel-agent
+
+1. **NATS** (management network, TLS): create a CA and server certificate,
+   one nkey per PoP (`sentinel-agent nkey generate --out lab1.nk` prints the
+   public key), and render the server config:
+
+   ```sh
+   deploy/nats/render-config.py --listen 0.0.0.0:4222 --cert server.pem \
+       --key server.key --store /var/lib/nats --admin UADMIN... \
+       --pop lab1=ULAB1... > nats.json
+   nats-server -c nats.json
+   for b in tenants services rules platform; do nats kv add $b --history 5; done
+   ```
+
+2. **Agent**: copy `configs/agent.example.toml`, set the PoP id, interface,
+   addresses, NATS URL, CA and seed file, then
+   `sentinel-agent check-config --config pop.toml` and
+   `sentinel-agent run --config pop.toml` (as root; systemd units come with
+   phase 8). The agent attaches XDP itself.
+
+3. **Configure through KV** (until the API exists, with the `nats` CLI and
+   admin credentials):
+
+   ```sh
+   nats kv put tenants asset.1 '{"v":1,"version":1,"asset":1,"tenant":42,
+     "prefix":"198.51.100.10/32","origin":"192.0.2.10",
+     "policy":{"mode":"mitigate","syncookies":true,"enforce_services":true}}'
+   nats kv put services asset.1 '{"v":1,"version":1,"services":[{"proto":"tcp","port":443}]}'
+   nats kv put rules tenant.42 '{"v":1,"version":1,"block":[{"prefix":"203.0.113.0/24","expires_at":1762790405000}]}'
+   nats kv put platform global '{"v":1,"version":1,"observe":true}'   # kill switch
+   nats sub 'config.ack.>'        # every change is acknowledged per PoP
+   ```
+
+   The full schema is in ADR 0015. `sentinelctl asset script 1` still
+   generates the customer's tunnel script from the applied state.
+
+While the agent runs it owns assets, services, rules and the kill switch:
+`sentinelctl` changes to those are overwritten at the next resync (it warns).
+Read-only `sentinelctl` commands (`stats`, `asset list`, `config show`, ...)
+are always fine.
+
+| Agent output | Where |
+|---|---|
+| acknowledgements | `config.ack.<pop>` |
+| counters + rates, every second | `stats.<pop>` and `http://127.0.0.1:9466/metrics` |
+| sampled flows, every second | `telemetry.<pop>.<shard>` |
+| health, every 5 s | `health.<pop>` and the heartbeat file |
+
+## Running the API
+
+1. **PostgreSQL 16+.** Create the database and an owner role, run the
+   migrations as the owner, then let the API's role log in:
+
+   ```sh
+   export SENTINEL_API_CONFIG=configs/api.local.toml        # from api.example.toml
+   export SENTINEL_DATABASE_OWNER_URL=postgres://sentinel_owner:...@db/sentinel
+   sentinel-api migrate                                     # creates role sentinel_api (NOLOGIN)
+   psql ... -c "ALTER ROLE sentinel_api LOGIN PASSWORD '...'"
+   ```
+
+   The owner needs `CREATEROLE` for the first migration (or create
+   `sentinel_api` yourself beforehand).
+
+2. **Secrets** (environment, never files in git):
+   `SENTINEL_DATABASE_URL` (role `sentinel_api`), `SENTINEL_DATA_KEY`
+   (`head -c 32 /dev/urandom | base64`; encrypts TOTP secrets: keep it,
+   losing it disables everyone's 2FA).
+
+3. **NATS:** give the API its own nkey user (`render-config.py --api U...`);
+   it may write the KV buckets and read acknowledgements and health.
+
+4. `sentinel-api serve`, behind TLS (a reverse proxy; then set
+   `trust_proxy = true`). First operator:
+   `SENTINEL_ADMIN_PASSWORD=... sentinel-api create-admin --email ops@example.org`,
+   then enable 2FA before using `/admin/*`.
+
+`sentinel-api openapi` prints the OpenAPI document; after changing
+endpoints regenerate the snapshot with
+`UPDATE_OPENAPI=1 cargo test -p sentinel-api --test openapi`, then the web
+client with `pnpm --filter web gen:api`.
+
+## Production deployment
+
+See [go-live.md](go-live.md) for the full order of steps.
+
+- **Control plane:** `cd deploy/compose`, `cp .env.example state/.env`,
+  edit it, `scripts/init.sh`, `docker compose --env-file state/.env up -d
+  --build`. Grafana listens on 127.0.0.1:3001 (SSH tunnel); PoP agents are
+  listed in `prometheus/targets/pops.json`. Backups: `scripts/backup.sh`.
+- **PoPs:** `deploy/ansible`, inventory from `inventories/example`,
+  `ansible-playbook -i inventories/<site>/hosts.yml playbooks/pop.yml`
+  (dry run until `bgp_export_enabled: true`).
+- **Tests:** `make deploy-artifacts deploy-test` (Linux Docker host) and
+  `make deploy-smoke`.
+
+## The anycast lab (containerlab)
+
+```sh
+make lab-up          # build, generate lab/state, deploy 19 nodes, init NATS/ClickHouse
+make lab-test        # deploy + acceptance test + destroy (KEEP=1 keeps it running)
+make lab-down
+```
+
+- Runs on the host's Docker (Docker Desktop on a Mac): needs about 2 GB of
+  memory and pulls `clickhouse/clickhouse-server:25.8.33.6`; builds the
+  `sentinel-lab` image. Nodes are `clab-sentinel-<name>`:
+  `docker exec clab-sentinel-region-2 birdc -s /run/bird/bird.ctl show route`.
+- The API listens on http://172.31.250.13:8080 (reachable from the Docker
+  host); logs of every daemon are in `lab/state/logs/`, mails in
+  `lab/state/mail/`.
+- Address plan and links: header of `lab/topology.clab.yml`.
+
+## Operating a PoP: health check and draining
+
+- Install `deploy/health/sentinel-health.sh` to `/usr/lib/sentinel/`, the
+  units from `deploy/systemd/`, and `/etc/sentinel/health.env` with
+  `XS_IFACE=<uplink>` (optional `XS_HEARTBEAT`, `XS_MAX_AGE`, `BIRDC`,
+  `XS_PROTOCOLS`); `systemctl enable --now sentinel-health.timer`.
+- BIRD includes `/etc/bird/drain.conf` and prepends the AS path when
+  `DRAIN = 1` (see `lab/bird/pop-1.conf`); give the agent a `[bird]`
+  section. Drain from the admin panel (PoPs) or
+  `POST /api/v1/admin/pops/<id>/drain {"drain": true}`.
+
+## ClickHouse
+
+Apply `migrations/clickhouse/0001_flows.sql`, create users like
+`0002_users.example.sql`, then configure `[clickhouse]` in the worker
+(writer) and API (reader) configs; passwords via
+`SENTINEL_CLICKHOUSE_PASSWORD`.
+
+## Running an analysis worker
+
+```sh
+sentinel-worker key generate --out /etc/sentinel/worker-1.key     # prints the public key
+sentinel-worker nkey generate --out /etc/sentinel/worker-1.nk     # NATS user
+sentinel-api signing-key add --issuer worker-1 --public-key <printed key>
+#   (or POST /api/v1/admin/signing-keys as a platform admin)
+render-config.py ... --worker worker-1=<NATS public nkey>         # NATS permissions
+sentinel-worker check-config --config /etc/sentinel/worker.toml
+sentinel-worker run --config /etc/sentinel/worker.toml
+```
+
+- `configs/worker.example.toml` documents the thresholds. `shards` must
+  equal the agents' `telemetry.shards`; more workers split the shards
+  automatically (NATS queue groups).
+- The PoPs learn trusted keys from the `keys` KV bucket (create it like the
+  others: `nats kv add keys`). `sentinel-api signing-key revoke --issuer
+  worker-1` makes every PoP refuse that worker within seconds.
+- Operators can sign a decision by hand:
+  `sentinel-worker sign --key worker-1.key --issuer worker-1 --tenant 42
+  --src 203.0.113.0/24 --ttl 600 --reason manual | nats pub decision.global`
+  (or `POST /api/v1/admin/decisions` with the API's own key in
+  `SENTINEL_DECISION_KEY`).
+- Agents count outcomes in `sentinel_decisions_total{result=...}`.
+
+## Public website and status page
+
+- Website settings at build time: copy `web/.env.example` to
+  `web/.env.local` (`NEXT_PUBLIC_CONTACT_EMAIL`, `NEXT_PUBLIC_STATUS_URL`).
+- Status page: copy `status-page/` to a static host on its own domain, add
+  `config.js` (from `config.example.js`: the API's status URL and the
+  portal URL), edit `incidents.json` during incidents, and list the page's
+  origin in the API's `[server] status_page_origins`. Serve it with the same
+  CSP as the meta tag plus `frame-ancestors 'none'`.
+
+## Running the portal (web app)
+
+The portal is a Next.js app in `web/` that only talks to the API, under the
+same origin ([ADR 0018](adr/0018-portal-architecture.md)):
+
+```sh
+pnpm install
+pnpm --filter web build && pnpm --filter web start      # Next.js on 127.0.0.1:3001
+EDGE_LISTEN=127.0.0.1:3000 API_ORIGIN=http://127.0.0.1:8080 \
+  WEB_ORIGIN=http://127.0.0.1:3001 node web/scripts/edge.mjs   # one origin for both
+```
+
+- The API's `server.public_url` must be the URL users open (passkeys are
+  bound to its host; WebSocket origins are checked against it; mail links
+  point there). Set `trust_proxy = true` behind the edge proxy or any
+  reverse proxy that overwrites `X-Forwarded-For`.
+- `edge.mjs` is for development and tests. In production put a TLS reverse
+  proxy in front that routes `/api/v1/` (with WebSocket upgrades) to the API
+  and everything else to Next.js; the portal then sends HSTS.
+- Browsers treat `http://localhost` as secure, so `cookie_secure = true`
+  works there; other plain-HTTP lab hosts need `cookie_secure = false`, and
+  passkeys need HTTPS or localhost.
+- Tunnel tests need the PoPs online and connected to NATS, a route from each
+  PoP to the origins, and the API allowed to publish `probe.>`
+  (`render-config.py` does this; [ADR 0020](adr/0020-tunnel-test.md)).
+
+## sentinel-gen (lab traffic generator)
+
+```sh
+sentinel-gen syn --dst 198.51.100.10 --dport 80 --src 203.0.113.128/25 --duration 5s --pps 20000
+sentinel-gen udp --dst 198.51.100.10 --dport 53 --src 203.0.113.50 --count 3000
+sentinel-gen ack --dst 2001:db8:100::10 --src 2001:db8:100:ff::/64 --count 1000
+```
+
+Each packet uses a random source from `--src`. Destination and sources must be
+inside the lab ranges (spec §11.1); `--allow-non-lab-destination` disables the
+check and prints a warning. Needs root (raw sockets).
+
+### Generic mode
+
+`--mode generic` is refused unless `--allow-generic` is also given. Generic
+XDP runs after the kernel allocates an skb and is far too slow for a PoP; use
+it only for tests on drivers without native XDP.
+
+### Network namespaces
+
+`ifindex` lookup and the XDP link are relative to the caller's network
+namespace, so run `sentinelctl` inside the namespace that owns the interface.
+Use `nsenter --net=/run/netns/<ns> sentinelctl ...`, **not**
+`ip netns exec <ns> ...`: the latter remounts `/sys` in a private mount
+namespace, which hides bpffs at `/sys/fs/bpf`, and attach fails with
+"creating /sys/fs/bpf/sentinel: No such file or directory".
+
+### VLANs on physical NICs
+
+The parser handles in-band VLAN tags. Many NICs strip the outer tag before
+XDP sees it (rx-vlan offload). On a PoP with tagged uplinks, disable it:
+`ethtool -K <iface> rxvlan off`. See
+[ADR 0003](adr/0003-vlan-offload.md).
+
+## Troubleshooting
+
+| Symptom | Cause / fix |
+|---|---|
+| `driver does not support native XDP` | NIC driver lacks XDP; pick another NIC (generic only for tests) |
+| `another XDP program is already attached` | `ip link show dev <iface>`; remove the other program first |
+| `already attached to <iface>` | a pinned link exists; `sentinelctl detach --iface <iface>` |
+| `is not on bpffs` | `mount -t bpf bpf /sys/fs/bpf` |
+| `loading ... incompatible build` | pinned maps from an older ABI; detach every interface, then attach again |
+| `XDP program is not attached` (stats) | nothing attached with this `SENTINEL_PIN_DIR` |
+| clients hang ~1 s on first connect | SYN cookies on and the client never answers the challenge with RST (some middleboxes drop it); allowlist the client network |
+| `syncookie key MISSING` in `config show` | maps were created by an old build; detach and attach again (SYNs pass meanwhile) |
+| `drop_no_tenant` for a customer's traffic | no asset covers the destination: `asset list` |
+| `drop_tunnel` | no PoP IPv4 configured (`config set --pop-ip4`) |
+| `drop_too_big` | packets above uplink MTU − 20; check the customer's MSS / tunnel MTU 1480 |
+| `drop_return` | replies from an unregistered origin, or with a source that is not that origin's asset |
+| API answers 404 for a tenant you belong to | session expired (idle 1 h) or the role is missing; check `GET /me` |
+| API `403 csrf` | send the `csrf_token` from login or `/me` as `X-CSRF-Token` |
+| asset status stays "0 of N PoPs" | outbox not drained (NATS down? `kv_outbox` rows) or the agent rejected the document (`config_acks.error`) |
+| `rejected: ...` in the agent log / `"ok":false` acks | the KV document failed validation; the previous state is kept |
+| agent: `KV sync stopped ... retrying` | NATS unreachable or bucket missing; XDP keeps the last state |
+| `sampled_events_lost` rising | ring buffer full: raise `sample_base` |
+| customer sees nothing in the tunnel | provider filters IP protocol 4/41, or rp_filter on the origin; the script turns rp_filter off |

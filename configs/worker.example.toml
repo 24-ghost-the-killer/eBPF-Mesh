@@ -1,8 +1,40 @@
-# eBPF Mesh analysis worker configuration (example).
-# Install as /etc/ebpf-mesh/worker.toml. Used from Phase 5.
+# Sentinel-Edge analysis worker (example). Secrets (the signing seed, the NATS
+# nkey seed) live in files named here, never in this file or in git.
 
-# Stable identifier, [A-Za-z0-9_-]{1,64}.
-worker_id = "worker-1"
+[worker]
+id = "worker-1"                                  # issuer name in decisions
+signing_key_file = "/etc/sentinel/worker-1.key"  # `sentinel-worker key generate`
+shards = 16                                      # = the agents' telemetry.shards
 
-# NATS server of the lab (private address; replace with your own).
-nats_url = "nats://10.0.0.5:4222"
+[nats]
+url = "tls://nats.mgmt.example.org:4222"
+ca = "/etc/sentinel/nats-ca.pem"
+nkey_seed_file = "/etc/sentinel/worker-1.nk"
+
+[detect]
+start_after_s = 3        # signals high this long -> attack starts
+end_after_s = 30         # all signals normal this long -> attack ends
+min_pps = 50000          # absolute floors per tenant
+min_bps = 200000000
+min_syn_pps = 10000
+min_new_sources = 1000
+factor = 4.0             # high = above floor, factor x baseline and baseline + sigma x stddev
+sigma = 6.0
+half_life_s = 10800      # baseline memory (3 h)
+warmup_s = 300           # floors only until the baseline has this much history
+update_every_s = 5
+
+[mitigate]
+enabled = true
+ttl_s = 300              # every decision expires (enforced in XDP)
+min_src_pps = 1000       # a source must send this much attack traffic
+aggregate_min_sources = 8   # block the /24 (/48) when this many of its sources qualify
+max_per_tick = 50
+
+[clickhouse]             # optional: traffic history (flows of this worker's shards)
+url = "https://clickhouse.mgmt.example.org:8443"
+database = "sentinel"
+user = "sentinel_worker"            # INSERT on flows only
+password_env = "SENTINEL_CLICKHOUSE_PASSWORD"
+batch_rows = 5000
+queue_batches = 1000

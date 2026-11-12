@@ -1,14 +1,11 @@
-eBPF Mesh is licensed per directory:
+Sentinel-Edge is dual-licensed per component. Every source file carries an
+SPDX-License-Identifier header; the full texts are in LICENSES/.
 
-  ebpf/, tests/common/, tests/bpf/
-      GPL-2.0-only OR BSD-2-Clause (SPDX: GPL-2.0-only OR BSD-2-Clause)
-      The BPF program must be GPL-compatible to use GPL-only kernel helpers
-      (e.g. the SYN-cookie helpers in Phase 1); the BSD option keeps the ABI
-      headers usable from non-GPL code.
+  ebpf/, tests/bpf/, tests/common/   GPL-2.0-only OR BSD-2-Clause
+      (the XDP program must be GPL-compatible to use GPL-only BPF helpers,
+       e.g. the SYN-cookie helpers; BSD-2-Clause keeps the ABI header usable
+       from any userspace code)
 
-  everything else (userspace/, tests/integration/, scripts/, lab/, docs/, ...)
-      MIT OR Apache-2.0 (SPDX: MIT OR Apache-2.0)
+  everything else                    MIT OR Apache-2.0
 
-Full texts: LICENSES/GPL-2.0-only.txt, LICENSES/BSD-2-Clause.txt,
-LICENSES/MIT.txt, LICENSES/Apache-2.0.txt. C sources carry an
-SPDX-License-Identifier; Rust crates declare theirs in Cargo.toml.
+Copyright (c) 2026 Sentinel-Edge contributors

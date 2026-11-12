@@ -1,0 +1,11 @@
+target
+build
+node_modules
+web/node_modules
+web/.next
+tests/e2e/node_modules
+tests/e2e/test-results
+lab/state
+lab/clab-sentinel
+deploy/compose/state
+.git

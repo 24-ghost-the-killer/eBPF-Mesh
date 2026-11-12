@@ -1,37 +1,60 @@
 [workspace]
-resolver = "3"
+resolver = "2"
 members = [
-    "userspace/common",
-    "userspace/ctl",
-    "userspace/agent",
-    "userspace/worker",
+    "crates/common",
+    "crates/bpf",
+    "crates/ctl",
+    "crates/gen",
+    "crates/agent",
+    "crates/worker",
+    "crates/api",
 ]
 
 [workspace.package]
 version = "0.1.0"
-edition = "2024"
-rust-version = "1.85"
+edition = "2021"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/24-ghost-the-killer/eBPF-Mesh"
+rust-version = "1.94"
+publish = false
 
 [workspace.dependencies]
+aes-gcm = "0.11"
 anyhow = "1"
-clap = { version = "4.5", features = ["derive"] }
+argon2 = "0.6"
+base64 = "0.23"
+getrandom = "0.3"
+reqwest = { version = "0.13", default-features = false, features = ["json", "query", "rustls-no-provider"] }
+sha2 = "0.11"
+hmac = "0.13"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls-ring-webpki", "migrate", "macros", "derive", "json"] }
+totp-rs = { version = "6", features = ["otpauth"] }
+webauthn-rs = { version = "0.6", features = ["danger-allow-state-serialisation"] }
+tokio-tungstenite = "0.29"
+url = "2"
+ed25519-dalek = "2.2"
+uuid = { version = "1", features = ["v7"] }
+utoipa = "6"
+async-nats = "0.52"
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+futures = "0.3"
+nkeys = "0.4"
+prometheus-client = "0.25"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time", "sync", "net"] }
+toml = "0.9"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4.6", features = ["derive", "env"] }
 libbpf-rs = "0.27"
+libbpf-sys = "1.7"
 libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-thiserror = "2"
-toml = "0.8"
-em-common = { path = "userspace/common" }
+sentinel-common = { path = "crates/common" }
+sentinel-bpf = { path = "crates/bpf" }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
-missing_debug_implementations = "warn"
 
 [workspace.lints.clippy]
-undocumented_unsafe_blocks = "deny"
-
-[profile.release]
-lto = "thin"
-codegen-units = 1
+all = { level = "warn", priority = -1 }

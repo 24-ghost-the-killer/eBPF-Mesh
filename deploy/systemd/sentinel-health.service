@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+[Unit]
+Description=Sentinel-Edge PoP health check (withdraw anycast when unhealthy)
+After=bird.service sentinel-agent.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/sentinel/health.env
+ExecStart=/usr/lib/sentinel/sentinel-health.sh

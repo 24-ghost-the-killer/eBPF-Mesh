@@ -1,0 +1,25 @@
+[package]
+name = "sentinel-ctl"
+description = "Sentinel-Edge operator CLI"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "sentinelctl"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sentinel-common.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+sentinel-bpf.workspace = true
+
+[lints]
+workspace = true

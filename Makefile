@@ -1,112 +1,174 @@
-# eBPF Mesh - top-level build and test entry points.
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Sentinel-Edge top-level build.
 #
-#   make                        build the XDP object, the Rust workspace and the
-#                               root-only test binaries (Linux; on macOS only
-#                               the Rust workspace is built)
-#   make test                   unprivileged tests: host dataplane tests + cargo test
-#                               (Linux and macOS)
-#   sudo make test-bpf          verifier + BPF_PROG_TEST_RUN corpus (Linux, root)
+#   make                    build the XDP object (Linux) and the Rust workspace
+#   make test               fmt + clippy + Rust unit tests (any OS)
+#   sudo make test-bpf      BPF_PROG_TEST_RUN parser tests (Linux, root)
 #   sudo make test-integration  veth/netns end-to-end test (Linux, root)
-#   make lint                   rustfmt --check + clippy -D warnings
-#   make docker-test            everything above in a privileged Linux container
+#   make test-web           web app: API client drift, typecheck, Vitest, build
+#   sudo make test-e2e      Playwright onboarding/isolation tests against the lab
+#   make docker-test        everything above inside a privileged container
+#                           (use this on macOS)
+#   make lab-test           anycast lab (containerlab): regions, PoPs, drain, failover
 #
-# Run `make` as your user before the sudo targets: they only depend on built
-# files, so root never needs cargo or rustup on its PATH.
+# The repo path may contain spaces: only relative paths are used in targets.
 
-UNAME_S := $(shell uname -s)
-PLATFORM := $(shell uname -s | tr A-Z a-z)-$(shell uname -m)
+CARGO      ?= cargo
+TARGET_DIR ?= $(or $(CARGO_TARGET_DIR),target)
+BUILD      := build
+BPF_OBJ    := $(BUILD)/ebpf/xdp_main.o
+CTL        := $(TARGET_DIR)/debug/sentinelctl
+GEN        := $(TARGET_DIR)/debug/sentinel-gen
+AGENT      := $(TARGET_DIR)/debug/sentinel-agent
+API        := $(TARGET_DIR)/debug/sentinel-api
+WORKER     := $(TARGET_DIR)/debug/sentinel-worker
+PASS_OBJ   := $(BUILD)/tests/xdp_pass.o
+TEST_XDP   := $(BUILD)/tests/test_xdp
+UNAME_S    := $(shell uname -s)
 
-# Per-platform output dirs, so a macOS checkout mounted into a Linux container
-# never mixes host and container artefacts.
-BUILD            ?= build/$(PLATFORM)
-CARGO            ?= cargo
-CARGO_TARGET_DIR ?= target/$(PLATFORM)
-export CARGO_TARGET_DIR
+DOCKER_BASE  ?= sentinel-dev
+DOCKER_IMAGE ?= sentinel-web
+# Linux node_modules and .next live in volumes, not in the (macOS) checkout.
+DOCKER_VOLS   = -v "$(CURDIR)":/src \
+	-v sentinel-cargo:/usr/local/cargo/registry \
+	-v sentinel-target:/target -e CARGO_TARGET_DIR=/target \
+	-v sentinel-nm-root:/src/node_modules -v sentinel-nm-web:/src/web/node_modules \
+	-v sentinel-nm-e2e:/src/tests/e2e/node_modules -v sentinel-next:/src/web/.next \
+	-v sentinel-pnpm:/pnpm-store -v sentinel-playwright:/ms-playwright \
+	-e PNPM_STORE_DIR=/pnpm-store -e E2E_ARTIFACTS=/src/build/e2e-artifacts
+DOCKER_RUN    = docker run --rm --privileged $(DOCKER_VOLS) $(DOCKER_IMAGE)
 
-OBJ := $(BUILD)/em_xdp.bpf.o
-CTL := $(CARGO_TARGET_DIR)/release/meshctl
+.PHONY: all build bpf rust test lint test-api test-bpf test-integration test-all \
+	web-install test-web test-e2e docker-image docker-test docker-shell lab-up lab-down lab-test \
+	deploy-check deploy-artifacts deploy-test deploy-smoke clean help
 
-HOST_CC     ?= cc
-TEST_CFLAGS := -std=gnu11 -O1 -g -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unknown-pragmas \
-	-I ebpf/src -I tests/common
-SAN_FLAGS   := -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer
+all: build
 
-RUST_SRCS  := Cargo.toml Cargo.lock $(shell find userspace -name '*.rs' -o -name Cargo.toml)
-EBPF_SRCS  := $(wildcard ebpf/src/*.c ebpf/src/*.h)
-TEST_HDRS  := $(wildcard tests/common/*.h) $(wildcard ebpf/src/*.h)
+build: bpf rust
 
-.PHONY: all ebpf userspace test test-host test-rust test-bpf test-integration \
-	lint fmt clean docker-image docker-test docker-shell
-
+bpf:
 ifeq ($(UNAME_S),Linux)
-all: ebpf userspace $(BUILD)/tests/test_xdp
+	$(MAKE) -C ebpf
 else
-all: userspace
-	@echo "note: the XDP object and root-only tests build on Linux only;"
-	@echo "      use 'make docker-test' or a Linux VM (docs/running.md)."
+	@echo "bpf: skipped on $(UNAME_S); the XDP object needs Linux (try: make docker-test)"
 endif
 
-ebpf: $(OBJ)
-
-$(OBJ): $(EBPF_SRCS) ebpf/Makefile
-	$(MAKE) -C ebpf OUT=$(abspath $(BUILD))
-
-userspace: $(CTL)
-
-$(CTL): $(RUST_SRCS)
-	$(CARGO) build --release --workspace --locked
-
-# ---------------- unprivileged tests ----------------
-
-test: test-host test-rust
-
-$(BUILD)/tests/parser_host: tests/bpf/parser_host.c $(TEST_HDRS)
-	@mkdir -p $(@D)
-	$(HOST_CC) $(TEST_CFLAGS) $(SAN_FLAGS) $< -o $@
-
-test-host: $(BUILD)/tests/parser_host
-	./$(BUILD)/tests/parser_host
-
-test-rust:
-	$(CARGO) test --workspace --locked
+rust:
+	$(CARGO) build --workspace
 
 lint:
-	$(CARGO) fmt --all -- --check
-	$(CARGO) clippy --workspace --all-targets --locked -- -D warnings
+	$(CARGO) fmt --all --check
+	$(CARGO) clippy --workspace --all-targets -- -D warnings
 
-fmt:
-	$(CARGO) fmt --all
+test: lint
+	$(CARGO) test --workspace
+	python3 -m unittest discover -s deploy/ansible/filter_plugins
 
-# ---------------- root-only tests (Linux, BPF-capable kernel) ----------------
+# API integration tests against a throwaway PostgreSQL (initdb with a unix
+# socket in a temp dir: bind mounts may not support sockets; as root the
+# cluster runs as nobody).
+test-api:
+	@dir=$$(mktemp -d /tmp/sentinel-pg.XXXXXX) && url=$$(tests/api/pg.sh start "$$dir") && \
+	  SENTINEL_TEST_PG="$$url" $(CARGO) test -p sentinel-api --test api -- --ignored --test-threads 4; \
+	  rc=$$?; tests/api/pg.sh stop "$$dir"; rm -rf "$$dir"; exit $$rc
 
-$(BUILD)/tests/test_xdp: tests/bpf/test_xdp.c $(TEST_HDRS)
+$(TEST_XDP): tests/bpf/test_xdp.c tests/bpf/policy_tests.c tests/bpf/tunnel_tests.c tests/bpf/sample_tests.c tests/bpf/harness.h tests/bpf/cases.h tests/common/pktbuild.h ebpf/include/abi.h ebpf/src/cookie.h
 	@mkdir -p $(@D)
-	$(HOST_CC) $(TEST_CFLAGS) $< -o $@ -lbpf -lelf -lz
+	$(CC) -O2 -g -std=gnu11 -Wall -Wextra -Werror $(filter %.c,$^) -o $@ $$(pkg-config --cflags --libs libbpf)
 
-test-bpf: $(OBJ) $(BUILD)/tests/test_xdp
-	./$(BUILD)/tests/test_xdp $(OBJ)
+test-bpf: bpf $(TEST_XDP)
+	./$(TEST_XDP) $(BPF_OBJ)
 
-test-integration: $(OBJ) $(CTL)
-	CTL=$(abspath $(CTL)) OBJ=$(abspath $(OBJ)) tests/integration/veth.sh
+$(PASS_OBJ): tests/integration/xdp_pass.c
+	@mkdir -p $(@D)
+	clang -target bpf -O2 -g -Wall -Werror -I/usr/include/$$(uname -m)-linux-gnu -c $< -o $@
 
-# ---------------- containerised Linux toolchain ----------------
+INTEGRATION_TESTS := veth_counts tunnel policy_live synflood agent_kv decisions api_e2e
 
-DOCKER       ?= docker
-DOCKER_IMAGE ?= ebpf-mesh-dev
-DOCKER_RUN   := $(DOCKER) run --rm --privileged \
-	-v "$(CURDIR)":/src -w /src \
-	-v ebpf-mesh-cargo:/usr/local/cargo/registry \
-	$(DOCKER_IMAGE)
+# Does not build the Rust binaries: under sudo, cargo is usually not on PATH.
+test-integration: bpf $(PASS_OBJ)
+	@for b in "$(CTL)" "$(GEN)" "$(AGENT)" "$(API)" "$(WORKER)"; do test -x "$$b" || { echo "missing $$b: run 'make rust' first (as your normal user)"; exit 1; }; done
+	@set -e; for t in $(INTEGRATION_TESTS); do \
+		echo "# integration: $$t"; \
+		CTL="$(abspath $(CTL))" GEN="$(abspath $(GEN))" AGENT="$(abspath $(AGENT))" \
+		API="$(abspath $(API))" WORKER="$(abspath $(WORKER))" PGSH="$(abspath tests/api/pg.sh)" \
+		RENDER="$(abspath deploy/nats/render-config.py)" BPF_OBJ="$(abspath $(BPF_OBJ))" \
+		PASS_OBJ="$(abspath $(PASS_OBJ))" tests/integration/$$t.sh; \
+	done
+
+web-install:
+	pnpm install --frozen-lockfile $(if $(PNPM_STORE_DIR),--store-dir $(PNPM_STORE_DIR))
+
+# Web app: generated API client matches docs/openapi.json, types, Vitest, build.
+test-web: web-install
+	pnpm --filter web check
+	pnpm --filter e2e exec tsc --noEmit -p .
+	pnpm --filter web build
+
+# Playwright against the full lab (root: namespaces, XDP). Needs node + pnpm.
+test-e2e: bpf $(PASS_OBJ)
+	@for b in "$(CTL)" "$(GEN)" "$(AGENT)" "$(API)" "$(WORKER)"; do test -x "$$b" || { echo "missing $$b: run 'make rust' first (as your normal user)"; exit 1; }; done
+	CTL="$(abspath $(CTL))" GEN="$(abspath $(GEN))" AGENT="$(abspath $(AGENT))" \
+	API="$(abspath $(API))" WORKER="$(abspath $(WORKER))" PGSH="$(abspath tests/api/pg.sh)" \
+	RENDER="$(abspath deploy/nats/render-config.py)" BPF_OBJ="$(abspath $(BPF_OBJ))" \
+	PASS_OBJ="$(abspath $(PASS_OBJ))" tests/integration/portal_e2e.sh
+
+# Everything, in order. Must run as root on Linux (used by docker-test).
+test-all: build test test-api test-bpf test-integration test-web test-e2e
 
 docker-image:
-	$(DOCKER) build -t $(DOCKER_IMAGE) -f scripts/docker/Dockerfile.dev scripts/docker
+	docker build -q -t $(DOCKER_BASE) -f deploy/docker/Dockerfile.dev deploy/docker
+	docker build -q -t $(DOCKER_IMAGE) --build-arg BASE=$(DOCKER_BASE) -f deploy/docker/Dockerfile.web deploy/docker
 
 docker-test: docker-image
-	$(DOCKER_RUN) sh -c 'make all lint test test-bpf test-integration'
+	$(DOCKER_RUN) make test-all
 
 docker-shell: docker-image
-	$(DOCKER) run --rm -it --privileged -v "$(CURDIR)":/src -w /src \
-		-v ebpf-mesh-cargo:/usr/local/cargo/registry $(DOCKER_IMAGE) bash
+	docker run --rm -it --privileged $(DOCKER_VOLS) $(DOCKER_IMAGE) bash
+
+# The anycast lab (containerlab on the host's Docker, ADR 0023). The runner
+# container gets the Docker socket, host network/PID namespaces and the repo
+# at the same path as on the host (containerlab bind mounts are host paths).
+LAB_RUN = docker run --rm --privileged --network host --pid host \
+	-v /var/run/docker.sock:/var/run/docker.sock -v /var/run/netns:/var/run/netns \
+	-v "$(CURDIR)":"$(CURDIR)" -w "$(CURDIR)" \
+	-v sentinel-cargo:/usr/local/cargo/registry -v sentinel-target:/target \
+	-e CARGO_TARGET_DIR=/target -e KEEP $(DOCKER_IMAGE)
+
+# Production deployment (phase 10a, ADR 0026).
+#   deploy-check   Ansible syntax check (needs ansible-core)
+#   deploy-test    PoP playbook against a stand-in server (Linux Docker host;
+#                  ARTIFACTS = dir with bin/{sentinel-agent,sentinelctl,sentinel-worker}, xdp_main.o)
+#   deploy-smoke   control-plane compose stack from scratch (any Docker host)
+deploy-check:
+	cd deploy/ansible && ansible-playbook --syntax-check -i inventories/example/hosts.yml playbooks/pop.yml
+
+deploy-artifacts: build
+	rm -rf build/deploy && mkdir -p build/deploy/bin
+	cp $(AGENT) $(CTL) $(TARGET_DIR)/debug/sentinel-worker build/deploy/bin/
+	cp $(BPF_OBJ) build/deploy/
+
+deploy-test:
+	ARTIFACTS="$(or $(ARTIFACTS),$(abspath build/deploy))" tests/deploy/ansible_test.sh
+
+deploy-smoke:
+	tests/deploy/compose_smoke.sh
+
+lab-up: docker-image
+	$(LAB_RUN) lab/scripts/lab.sh up
+
+lab-down: docker-image
+	$(LAB_RUN) lab/scripts/lab.sh down
+
+# Phase 8 acceptance: bots per region hit their PoP; drain / agent kill /
+# node crash move traffic (KEEP=1 leaves the lab running afterwards).
+lab-test: docker-image
+	$(LAB_RUN) lab/scripts/lab.sh test
 
 clean:
-	rm -rf build target
+	$(MAKE) -C ebpf clean
+	rm -rf $(BUILD)
+	$(CARGO) clean
+
+help:
+	@sed -n '2,15p' Makefile

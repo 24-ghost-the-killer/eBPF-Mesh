@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+- name: Health check script
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../health/sentinel-health.sh"
+    dest: /usr/lib/sentinel/sentinel-health.sh
+    mode: "0755"
+
+- name: Health check settings
+  ansible.builtin.copy:
+    dest: /etc/sentinel/health.env
+    mode: "0644"
+    content: |
+      # Managed by Ansible (sentinel-edge): local changes are overwritten.
+      XS_IFACE={{ pop_uplink_iface }}
+      XS_PROTOCOLS={{ 'anycast4' if (sentinel_prefixes | reject('search', ':') | list) else '' }} {{ 'anycast6' if (sentinel_prefixes | select('search', ':') | list) else '' }}
+
+- name: Health check units
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../systemd/{{ item }}"
+    dest: "/etc/systemd/system/{{ item }}"
+    mode: "0644"
+  loop: [sentinel-health.service, sentinel-health.timer]
+
+- name: Health check timer is active
+  ansible.builtin.systemd_service:
+    name: sentinel-health.timer
+    state: started
+    enabled: true
+    daemon_reload: true

@@ -1,7 +1,24 @@
-/build/
-/target/
-/ebpf/build/
-*.o
-!/tests/**/*.o
+/target
+/build
+.env
+*.local.toml
+# NATS nkey seeds and other secrets
+*.nk
+*.pem
+*.key
+node_modules
+# web
+node_modules/
+/tests/e2e/test-results/
+/tests/e2e/playwright-report/
+# anycast lab
+/lab/state/
+/lab/clab-sentinel/
+/lab/.topology.clab.yml.bak
+/status-page/config.js
+/deploy/compose/state/
+/deploy/compose/prometheus/targets/pops.json
+/deploy/ansible/inventories/*
+!/deploy/ansible/inventories/example/
+# Python bytecode (Ansible filter plugins and their tests)
 __pycache__/
-.DS_Store
